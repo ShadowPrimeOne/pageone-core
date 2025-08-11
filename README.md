@@ -9,6 +9,7 @@ Clean, minimal Next.js 15 + Tailwind CSS 4 + Supabase SSR boilerplate for the un
 - Tech stack: Next.js 15.3.x, React 19.1.x, Tailwind CSS 4, Supabase JS 2.53+, `@supabase/ssr`
 - Auth/Roles: `dev`, `ambassador`, `client`
 - Routing: server-side protected `/dashboard`, public `/status/[business]`, redirect from `/` when logged-in
+- Account approval workflow: `profiles.status` (`pending`, `approved`, `denied`) gates access with `/pending` and `/denied` pages
 - State: Local dev is running; Supabase schema + RLS applied; Windows scripts added for clean start + auto-open Chrome
 
 Repository: https://github.com/ShadowPrimeOne/pageone-core
@@ -20,6 +21,8 @@ Repository: https://github.com/ShadowPrimeOne/pageone-core
 - Middleware in `middleware.ts`: redirects `/` → `/dashboard` when logged-in; protects `/dashboard/*` when not.
 - Verified core files exist and compile: `src/app/layout.tsx`, `src/app/page.tsx`, and `src/lib/supabase/*`.
 - TypeScript config aligned: Next set `esModuleInterop`, `incremental`, `plugins: [{ name: 'next' }]`, and `.next/types` include.
+ - Google OAuth configured correctly with Supabase + Google Console redirect URIs.
+ - Magic Link reliability improved: server route `src/app/auth/callback/route.ts` verifies OTP when possible and forwards bare `code` to client; client page `src/app/auth/callback/complete/page.tsx` exchanges code or verifies OTP, uses `localStorage` email fallback, and prompts for email if missing.
 
 ## Business Context & Requirements
 - Pricing: $479 upfront for 90-day trial, then 20% management fee on ad spend (min $20/day).
@@ -137,11 +140,27 @@ npm --prefix c:\\Pageone\\pageone-core run dev:win
 - Roles: `dev`, `ambassador`, `client`
 - Server-side sessions via `@supabase/ssr` and `middleware.ts`
 - `middleware.ts` behavior:
-  - If visiting `/` and authenticated → redirect to `/dashboard`
-  - If visiting `/dashboard/*` and not authenticated → redirect to `/`
-- Role badge/lookup performed in server components using `profiles` table
+  - If visiting `/` and authenticated → redirect to `/dashboard` when `status='approved'`
+  - If authenticated and `status='pending'` → redirect to `/pending`
+  - If authenticated and `status='denied'` → redirect to `/denied`
+  - If visiting `/dashboard/*` and not authenticated or `status!='approved'` → redirect to `/`
+- Role/status lookup in server components with `profiles` table
 
-Sign-in UI: to be added (`/login` planned). Providers: Magic Link, Google, GitHub (choose and enable in Supabase).
+Sign-in UI implemented at `/login` with providers:
+- Magic Link (Email OTP)
+- Google OAuth (GitHub removed)
+
+Provider setup notes:
+- Supabase → Auth → URL Configuration → Site URL: `http://localhost:3000`
+- Supabase → Auth → Providers → Google: enable and set Client ID/Secret. Redirect URL: `http://localhost:3000/auth/callback`. Also add Supabase callback to Google Console Authorized redirect URIs: `https://<PROJECT-REF>.supabase.co/auth/v1/callback`.
+
+Auth callback flow:
+- Server route: `src/app/auth/callback/route.ts`
+  - Handles Magic Link via `verifyOtp()` when `token_hash` exists or when `code+email+type` are present.
+  - For bare `code` (PKCE OAuth), forwards to client to use the PKCE verifier.
+- Client page: `src/app/auth/callback/complete/page.tsx`
+  - Exchanges OAuth `code` for a session or verifies Magic Link OTP.
+  - Reads email from query or `localStorage` key `po_otp_email` (set when sending magic link) and shows an email input fallback if missing.
 
 ---
 
@@ -149,6 +168,12 @@ Sign-in UI: to be added (`/login` planned). Providers: Magic Link, Google, GitHu
 - `/` Landing page (SSR). Redirects to `/dashboard` when logged-in.
 - `/dashboard` Auth-protected. Will host the ambassador/client dashboards.
 - `/status/[business]` Public status stub (MVP target: health score + metrics).
+
+### Account Approval Workflow
+- DB: `profiles.status` enum `account_status` with values `pending | approved | denied`.
+- SQL migration: `supabase/sql/2025-08-11_add_profile_status.sql` (run in Supabase SQL editor).
+- Middleware routes users based on `status` to `/dashboard`, `/pending`, or `/denied`.
+- Developer-only Accounts page at `/dashboard/accounts` lists users grouped by status and supports Approve/Deny/Pending and role assignment.
 
 ---
 
@@ -185,15 +210,20 @@ powershell -NoProfile -Command "(Test-NetConnection -ComputerName localhost -Por
 ```
 - If Chrome doesn’t open: Script falls back to default browser. You can manually `start http://localhost:3000`.
 
+Auth-specific:
+- Google: `redirect_uri_mismatch` → Add Supabase callback `https://<PROJECT-REF>.supabase.co/auth/v1/callback` in Google Console and set app redirect `http://localhost:3000/auth/callback` in Supabase provider.
+- Magic Link: If you see “both auth code and code verifier should be non-empty,” open the link in the same browser profile. Our callback now verifies OTP first; if email is missing you’ll be prompted to enter it on `/auth/callback/complete`.
+
 ---
 
 ## Roadmap (MVP)
 - [x] Scaffold Next.js 15 + Tailwind 4 + Supabase SSR boilerplate
-- [x] Implement role-aware middleware and basic routes
+- [x] Implement role/status-aware middleware and basic routes (/pending, /denied)
 - [x] Supabase schema + RLS applied; env configured
 - [x] Windows scripts for clean start + auto-open browser
+- [x] `/login` with Magic Link + Google OAuth and robust callback handling
+- [x] Developer Accounts page with Approve/Deny/Pending and role assignment
 - [ ] Define and implement Business Status page (health score, metrics, insights)
-- [ ] Add `/login` and connect chosen auth provider(s) (Magic Link / Google / GitHub)
 - [ ] Build Ambassador Dashboard: leads, onboarding, notifications
 - [ ] Payments onboarding: Stripe + PayPal (+ AU alternatives) before client onboarding
 - [ ] Placeholders for Google/Meta/Microsoft ad integrations & social presence
@@ -210,10 +240,12 @@ powershell -NoProfile -Command "(Test-NetConnection -ComputerName localhost -Por
 ---
 
 ## Handover Checklist
-- [ ] Ensure `.env.local` has valid Supabase URL and anon key (no quotes). Optional: service role key for server operations.
+- [ ] `.env.local` has: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`.
+- [ ] Apply SQL: run `supabase/sql/2025-08-11_add_profile_status.sql` in Supabase.
+- [ ] Providers: Enable Magic Link; enable Google with app redirect `http://localhost:3000/auth/callback` and Google Console redirect `https://<PROJECT-REF>.supabase.co/auth/v1/callback`.
+- [ ] Sign in once, then set your profile to `role='dev'` and `status='approved'` to access `/dashboard/accounts`.
 - [ ] Start locally on Windows: `npm run dev:win` (auto kills port 3000, clears cache, opens Chrome).
-- [ ] Verify redirects: `/` → `/dashboard` when logged-in; `/dashboard/*` blocked when logged-out.
-- [ ] Decide and enable auth provider(s) in Supabase (Magic Link / Google / GitHub) and implement `/login` page.
+- [ ] Verify middleware redirects for approved/pending/denied statuses.
 - [ ] Begin Business Status page: health score + key metrics; wire to Supabase schema.
 - [ ] Outline Ambassador Dashboard: leads, onboarding, notifications.
 - [ ] Plan payment onboarding (Stripe + PayPal + AU alternatives) before client onboarding.
