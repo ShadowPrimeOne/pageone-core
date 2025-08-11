@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+:root {
+  --accent-1: #FF5BFF;
+  --accent-2: #D34DEE;
+  --accent-3: #BF4BF8;
+  --accent-4: #2AC9F9;
+  --accent-5: #56F1FF;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; }
+}
+
+html, body { height: 100%; }
+body { font-family: ui-sans-serif, system-ui, sans-serif; }
