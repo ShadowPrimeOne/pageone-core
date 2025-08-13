@@ -96,6 +96,49 @@ if (Test-Path ".next") {
 # Clear environment caches if any
 $env:NODE_OPTIONS = ""
 
+# --- Scraper worker tunnel + env bootstrap ---
+$ScraperKeyPath    = "$env:USERPROFILE\.ssh\pageone_ed25519"
+$ScraperRemoteUser = "shadow_prime_one"
+$ScraperRemoteHost = "34.9.45.190"
+$ScraperLocalPort  = 8878
+$ScraperRemotePort = 8787
+
+# Export env vars so the spawned Next.js dev inherits them
+$env:SCRAPER_WORKER_URL = "http://127.0.0.1:$ScraperLocalPort"
+$env:WORKER_TIMEOUT_MS  = "10000"
+
+try {
+  $listener = Get-NetTCPConnection -LocalPort $ScraperLocalPort -State Listen -ErrorAction SilentlyContinue
+} catch { $listener = $null }
+
+if (-not $listener) {
+  if (Test-Path $ScraperKeyPath) {
+    Write-Host "Ensuring SSH tunnel $($ScraperLocalPort) -> $($ScraperRemoteHost):$($ScraperRemotePort)" -ForegroundColor Cyan
+    $sshArgs = "-i `"$ScraperKeyPath`" -N -L $($ScraperLocalPort):127.0.0.1:$($ScraperRemotePort) $ScraperRemoteUser@$ScraperRemoteHost"
+    Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Hidden | Out-Null
+
+    # Wait until healthy (max ~10s)
+    $healthy = $false
+    for ($i=0; $i -lt 10; $i++) {
+      Start-Sleep -Seconds 1
+      try {
+        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "http://127.0.0.1:$ScraperLocalPort/health"
+        if ($r.Content -match '"ok":true') { $healthy = $true; break }
+      } catch { }
+    }
+    if (-not $healthy) {
+      Write-Host "Warning: Scraper tunnel did not become healthy on 127.0.0.1:$ScraperLocalPort" -ForegroundColor Yellow
+    } else {
+      Write-Host "Scraper tunnel is ready on http://127.0.0.1:$ScraperLocalPort" -ForegroundColor Green
+    }
+  } else {
+    Write-Host "SSH key not found at $ScraperKeyPath; skipping tunnel. Set SCRAPER_WORKER_URL manually if needed." -ForegroundColor Yellow
+  }
+} else {
+  Write-Host "SSH tunnel already listening on 127.0.0.1:$ScraperLocalPort" -ForegroundColor Green
+}
+# --- end tunnel + env bootstrap ---
+
 Write-Host "Starting Next.js dev server on http://localhost:$Port" -ForegroundColor Green
 # Launch background job to wait for server then open Chrome
 Start-Job -ScriptBlock {

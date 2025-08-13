@@ -166,6 +166,7 @@ export default async function AmbassadorDashboardPage() {
                 </form>
               </div>
             )}
+            <Link href="/audit" className="text-xs text-blue-600 hover:underline">Search</Link>
             <Link href="/pipeline/leads/new" className="text-xs text-blue-600 hover:underline">Add Lead</Link>
           </div>
         </div>
@@ -197,6 +198,12 @@ export default async function AmbassadorDashboardPage() {
                 const agr = l.agreement_id ? agreementsMap.get(l.agreement_id) : undefined
                 const responded = agr ? (Boolean(agr.signed_at) || ['signed','accepted','agreed','approved','completed','checked'].includes((agr.status ?? '').toLowerCase())) : false
                 const paid = l.payment_id ? (Boolean(paymentsMap.get(l.payment_id)?.paid_at) || ['paid','succeeded'].includes((paymentsMap.get(l.payment_id)?.status ?? ''))) : false
+                const gr = l.golden_record ?? {}
+                const prefill = new URLSearchParams({
+                  name: gr.name ?? '',
+                  address: gr.address ?? '',
+                  phone: Array.isArray(gr.phones) && gr.phones.length ? (gr.phones[0] ?? '') : (gr.phone ?? '')
+                }).toString()
                 return (
                   <tr key={l.id} className="border-t">
                     <td className="px-3 py-2">{name}</td>
@@ -241,7 +248,7 @@ export default async function AmbassadorDashboardPage() {
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         {!grComplete && (
-                          <Link href={`/pipeline/leads/${l.id}/audit`} className="text-blue-600 hover:underline">
+                          <Link href={`/audit?${prefill}`} className="text-blue-600 hover:underline">
                             Audit
                           </Link>
                         )}
