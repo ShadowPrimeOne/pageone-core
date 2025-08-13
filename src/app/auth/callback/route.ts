@@ -19,7 +19,7 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL(`/login?${params.toString()}`, request.url))
   }
 
-  const supabase = createClient()
+  const supabase = await createClient()
 
   try {
     if (tokenHash) {

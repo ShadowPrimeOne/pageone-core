@@ -5,7 +5,7 @@ import { setRole, clearRole, setStatus } from './actions'
 export const dynamic = 'force-dynamic'
 
 async function requireDev() {
-  const supabase = createClient()
+  const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { allowed: false as const, reason: 'no-user' }
   const { data: profile } = await supabase.from('profiles').select('role, full_name').eq('id', user.id).single()

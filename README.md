@@ -216,21 +216,88 @@ Auth-specific:
 
 ---
 
-## Roadmap (MVP)
-- [x] Scaffold Next.js 15 + Tailwind 4 + Supabase SSR boilerplate
-- [x] Implement role/status-aware middleware and basic routes (/pending, /denied)
-- [x] Supabase schema + RLS applied; env configured
-- [x] Windows scripts for clean start + auto-open browser
-- [x] `/login` with Magic Link + Google OAuth and robust callback handling
-- [x] Developer Accounts page with Approve/Deny/Pending and role assignment
-- [ ] Define and implement Business Status page (health score, metrics, insights)
-- [ ] Build Ambassador Dashboard: leads, onboarding, notifications
-- [ ] Payments onboarding: Stripe + PayPal (+ AU alternatives) before client onboarding
-- [ ] Placeholders for Google/Meta/Microsoft ad integrations & social presence
-- [ ] Theming: light/dark + neon accents
-- [ ] Documentation for ambassador/client onboarding flows
-
----
+## Payments & Stripe Webhook (Dev)
+ 
+This project supports a dev-friendly Stripe flow to convert a lead into a client via webhooks.
+ 
+• __Key files__
+  - `src/app/api/stripe/webhook/route.ts`: Webhook handler. Accepts signed events when `STRIPE_WEBHOOK_SECRET` is set. In dev (when unset), accepts raw JSON.
+  - `src/lib/supabase/admin.ts`: Supabase admin client (uses `SUPABASE_SERVICE_ROLE_KEY`).
+  - `src/app/dashboard/ambassador/actions.ts`: `createPayment()` and `seedDemoLeads()`.
+  - `src/app/dashboard/ambassador/page.tsx`: Pipeline UI (hides converted leads and exposes dev-only seed/nuke actions). Accessible at `/pipeline`.
+  - `scripts/dev.ps1`: Starts Next dev server and a Stripe CLI listener; attempts to fetch and export `STRIPE_WEBHOOK_SECRET` for the session.
+ 
+• __Environment__
+  - `.env.local` must include:
+    - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+    - `SUPABASE_SERVICE_ROLE_KEY`
+    - `STRIPE_SECRET_KEY`
+    - `STRIPE_WEBHOOK_SECRET` (optional in dev; required in production)
+ 
+• __Start (Windows)__
+  - Preferred: `npm run dev:win` (runs Next, opens browser, and starts Stripe CLI listener if available).
+  - Manual Stripe CLI (alternative):
+    ```powershell
+    stripe listen --forward-to http://localhost:3000/api/stripe/webhook --events checkout.session.completed,payment_intent.succeeded
+    ```
+    Copy the `whsec_...` into `.env.local` as `STRIPE_WEBHOOK_SECRET` and restart the dev server.
+ 
+• __Lead → Payment → Conversion test__
+  1) Go to `/pipeline`.
+  2) As `dev`, click “Seed Demo Leads” to create sample leads.
+  3) Click “Manual Payment” on a lead to open Stripe Checkout; pay with a test card (e.g., `4242 4242 4242 4242`).
+  4) Webhook receives `checkout.session.completed` (or `payment_intent.succeeded`). Handler:
+     - Marks `payments.status='paid'`, sets `paid_at`.
+     - Updates `leads.status='paid'` and links `payment_id`.
+     - Upserts a `business` (unique slug), links `lead.business_id`, sets `leads.status='converted'`.
+     - Ensures `memberships` for owner and seeds a starter onboarding task.
+ 
+• __UI result__
+  - Converted leads are hidden in the Pipeline page query: see `src/app/dashboard/ambassador/page.tsx` where leads filter `status != 'converted'` for both dev and ambassadors.
+  - New client appears under “Clients”.
+ 
+• __Verify in DB (SQL)__
+  ```sql
+  -- Payments (latest)
+  select id, lead_id, status, paid_at, session_id, created_at, updated_at
+  from payments order by updated_at desc limit 10;
+ 
+  -- Leads (latest)
+  select id, slug, status, payment_id, business_id, updated_at
+  from leads order by updated_at desc limit 10;
+ 
+  -- Businesses (latest)
+  select id, slug, name, owner_id, updated_at
+  from businesses order by updated_at desc limit 10;
+ 
+  -- Events (observe webhook + conversion logs)
+  select type, created_at
+  from events order by created_at desc limit 20;
+  ```
+ 
+• __Resend/Replay__
+  - List recent events: `stripe events list --limit 5`
+  - Resend a specific event (replace `evt_xxx`):
+    ```powershell
+    stripe events resend evt_xxx --forward-to http://localhost:3000/api/stripe/webhook --force
+    ```
+ 
+• __Notes__
+  - In development, leaving `STRIPE_WEBHOOK_SECRET` empty allows unsigned JSON (convenience). In production, set it and keep it secret.
+  - Ensure `SUPABASE_SERVICE_ROLE_KEY` matches the same project as your public anon key; otherwise webhook mutations will fail.
+  - A dev-only “Seed Demo Leads” button and “Nuke All” action exist on the Ambassador page (dev-only).
+ 
+ ---
+ 
+## Lead-to-Client Flow
+ 
+ 1) Lead captured/seeded → optional golden record audit → agreement initiation.
+ 2) Payment collected via Stripe Checkout (`createPayment()` sets metadata `lead_id` & `payment_id`).
+ 3) Webhook matches the session/payment to the lead and performs conversion.
+ 4) Business created/linked, membership ensured, onboarding task seeded.
+ 5) Lead hidden from Ambassador leads list; client visible in Clients grid and on `/status/[slug]`.
+ 
+ ---
 
 ## Security Notes
 - Service role key is server-only; never expose to the client.

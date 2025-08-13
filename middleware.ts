@@ -23,6 +23,13 @@ export async function middleware(req: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   const path = req.nextUrl.pathname
 
+  // Legacy redirect: /dashboard/ambassador -> /pipeline (preserve subpaths and query)
+  if (path.startsWith('/dashboard/ambassador')) {
+    const url = new URL(req.url)
+    url.pathname = `/pipeline${path.slice('/dashboard/ambassador'.length)}`
+    return NextResponse.redirect(url)
+  }
+
   // Helper to read status (fallback to 'pending' if missing or blocked by RLS)
   const getStatus = async (): Promise<'approved' | 'pending' | 'denied'> => {
     try {
@@ -37,9 +44,9 @@ export async function middleware(req: NextRequest) {
     }
   }
 
-  // Not signed in and trying to access dashboard
-  if (path.startsWith('/dashboard') && !user) {
-    return NextResponse.redirect(new URL('/', req.url))
+  // Not signed in and trying to access protected areas
+  if ((path.startsWith('/dashboard') || path.startsWith('/pipeline')) && !user) {
+    return NextResponse.redirect(new URL('/login', req.url))
   }
 
   // Signed in: route based on status
@@ -49,7 +56,7 @@ export async function middleware(req: NextRequest) {
       const target = status === 'approved' ? '/dashboard' : status === 'denied' ? '/denied' : '/pending'
       return NextResponse.redirect(new URL(target, req.url))
     }
-    if (path.startsWith('/dashboard')) {
+    if (path.startsWith('/dashboard') || path.startsWith('/pipeline')) {
       if (status === 'denied') return NextResponse.redirect(new URL('/denied', req.url))
       if (status !== 'approved') return NextResponse.redirect(new URL('/pending', req.url))
     }
@@ -59,5 +66,5 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/', '/dashboard/:path*'],
+  matcher: ['/', '/dashboard/:path*', '/pipeline/:path*'],
 }

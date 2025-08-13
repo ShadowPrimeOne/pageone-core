@@ -54,6 +54,22 @@ function Open-Chrome([string]$url) {
   }
 }
 
+function Get-StripePath {
+  if ($env:STRIPE_CLI_PATH -and (Test-Path $env:STRIPE_CLI_PATH)) { return $env:STRIPE_CLI_PATH }
+  try {
+    $cmd = Get-Command stripe -ErrorAction Stop
+    if ($cmd -and $cmd.Path) { return $cmd.Path }
+  } catch {}
+  $candidates = @(
+    "$Env:ProgramFiles\\Stripe\\Stripe CLI\\bin\\stripe.exe",
+    "$Env:LOCALAPPDATA\\Programs\\stripe\\stripe.exe",
+    "$Env:USERPROFILE\\scoop\\shims\\stripe.exe",
+    "$Env:ChocolateyInstall\\bin\\stripe.exe"
+  )
+  foreach ($p in $candidates) { if ($p -and (Test-Path $p)) { return $p } }
+  return $null
+}
+
 function Wait-And-OpenBrowser([int]$port) {
   $url = "http://localhost:$port"
   for ($i = 0; $i -lt 90; $i++) { # up to ~90s
@@ -112,4 +128,39 @@ Start-Job -ScriptBlock {
 } -ArgumentList $Port | Out-Null
 
 $env:PORT = $Port
-npm run dev
+
+# Start Stripe CLI listener (optional but recommended for local dev)
+try {
+  $stripePath = Get-StripePath
+  if ($stripePath) {
+    # If webhook secret not set, fetch one for this session
+    if (-not $env:STRIPE_WEBHOOK_SECRET -or [string]::IsNullOrWhiteSpace($env:STRIPE_WEBHOOK_SECRET)) {
+      Write-Host "Fetching STRIPE_WEBHOOK_SECRET via 'stripe listen --print-secret'..." -ForegroundColor Cyan
+      try {
+        $secret = (& $stripePath listen --print-secret) 2>$null
+        if ($LASTEXITCODE -eq 0 -and $secret -and ($secret.Trim()) -match '^whsec_') {
+          $env:STRIPE_WEBHOOK_SECRET = $secret.Trim()
+          Write-Host "STRIPE_WEBHOOK_SECRET set for this session." -ForegroundColor Green
+        } else {
+          Write-Host "Could not retrieve webhook secret automatically. If this is your first run, you may need to run 'stripe login' once." -ForegroundColor Yellow
+        }
+      } catch {
+        Write-Host "stripe listen --print-secret failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "If this is the first time using Stripe CLI, run 'stripe login' in a terminal to authenticate." -ForegroundColor Yellow
+      }
+    }
+
+    Write-Host "Starting Stripe CLI listener -> http://localhost:$Port/api/stripe/webhook" -ForegroundColor Green
+    # Do not hide the window so first-time login prompts are visible
+    Start-Process -FilePath $stripePath -ArgumentList @("listen","--forward-to","http://localhost:$Port/api/stripe/webhook") | Out-Null
+  } else {
+    Write-Host "Stripe CLI not found. Install from https://stripe.com/cli (or via winget/scoop) to enable local webhooks." -ForegroundColor Yellow
+  }
+} catch {
+  Write-Host "Could not start Stripe CLI listener: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
+# Launch Next.js in a separate window to avoid blocking the current terminal/agent
+Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoExit","-Command","npm run dev") -WorkingDirectory $PWD.Path | Out-Null
+Write-Host "Next.js dev server launched in a new window. This script will now exit to avoid blocking." -ForegroundColor Cyan
+exit 0
