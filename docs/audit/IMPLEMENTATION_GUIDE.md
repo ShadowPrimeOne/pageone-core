@@ -2,7 +2,7 @@
 
 This document is the source of truth for implementing and operating the “Audit” flow. It’s designed so any new contributor can take over mid-implementation or after a chat refresh and continue seamlessly.
 
-Last updated: 2025-08-13
+Last updated: 2025-08-14
 
 
 ## 1) Executive Summary
@@ -231,17 +231,23 @@ Wizard steps for `/dashboard/audit/[auditId]`:
 Env (`.env.local`):
 - NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
 - SUPABASE_SERVICE_ROLE (server-only if needed)
-- SEARXNG_BASE_URL (e.g., `https://searxng.example.com`) 
-- SCRAPER_WORKER_URL (e.g., `http://localhost:7071`)
+- SEARXNG_BASE_URL (e.g., `https://searxng.example.com`)
+- SCRAPER_WORKER_URL (dev via SSH tunnel default): `http://127.0.0.1:8878`
+- WORKER_TIMEOUT_MS: `10000` (10s fetch timeout to scraper)
+- PORT (Next.js dev): defaults to `3000`
 - PLAYWRIGHT_CHROMIUM_PATH (optional)
 
-Windows scripts (already present baseline):
-- `scripts/dev.ps1` and `scripts/start.ps1` support port selection, killing 3000, cache clear, and auto-open Chrome.
-- Add a `scripts/worker.ps1` to start the scraper worker (Playwright + Express) on port 7071.
+Windows scripts:
+- `scripts/dev.ps1` auto-starts an SSH tunnel to the scraper worker and exports env vars for Next dev.
+  - Tunnel: local `8878` → remote `34.9.45.190:8787` (via `%USERPROFILE%\.ssh\pageone_ed25519`).
+  - Exports: `SCRAPER_WORKER_URL=http://127.0.0.1:8878`, `WORKER_TIMEOUT_MS=10000`.
+  - Usage: `npm --prefix C:\Pageone\pageone-core run dev:win` (opens Next in new window).
+- `scripts/start.ps1` runs production build locally (no tunnel logic).
+- Optional: add `scripts/worker.ps1` if running a local worker instead of remote.
 
 Ports:
 - Next.js: 3000 (configurable via `PORT`)
-- Scraper Worker: 7071
+- Scraper Worker (remote): 8787 (reached locally via SSH tunnel on 8878)
 
 
 ## 13) RLS & Security
