@@ -329,13 +329,15 @@ async function convertLeadCore(
     businessId = await createBusinessWithUniqueSlug(supabase, name, lead.owner_id ?? lead.ambassador_id ?? null)
   }
 
-  // Ensure owner_id set on existing business if null
-  if (lead.owner_id) {
-    await supabase
-      .from('businesses')
-      .update({ owner_id: lead.owner_id })
-      .eq('id', businessId)
-      .is('owner_id', null)
+  // Ensure owner_id is set/updated to the lead's owner/ambassador
+  {
+    const newOwner = (lead.owner_id ?? lead.ambassador_id) ?? null
+    if (newOwner) {
+      await supabase
+        .from('businesses')
+        .update({ owner_id: newOwner })
+        .eq('id', businessId)
+    }
   }
 
   // Sync Business profile and pipeline membership (trial starts at conversion/payment)

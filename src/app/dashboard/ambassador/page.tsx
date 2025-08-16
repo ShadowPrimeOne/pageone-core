@@ -101,49 +101,23 @@ export default async function AmbassadorDashboardPage() {
   // Clients
   let clients: Array<{ id: string, slug: string, name: string | null, health_score: number | null, updated_at: string | null }> = []
   if (role === 'dev') {
-    // Devs see all recent businesses
+    // Devs see recent actual clients only (onboarded/subscribed)
     const { data: biz } = await supabase
       .from('businesses')
       .select('id, slug, name, health_score, updated_at')
+      .in('pipeline_stage', ['onboarded','subscribed'])
       .order('updated_at', { ascending: false })
       .limit(12)
     clients = (biz ?? []) as any
   } else {
-    // Ambassadors see clients they own (owner_id) plus any with memberships; fallback to public examples
-    const owned = await supabase
+    // Ambassadors see only clients they own (owner_id) in client stages
+    const { data: owned } = await supabase
       .from('businesses')
       .select('id, slug, name, health_score, updated_at')
       .eq('owner_id', user.id)
+      .in('pipeline_stage', ['onboarded','subscribed'])
       .order('updated_at', { ascending: false })
-
-    const memberships = await supabase
-      .from('memberships')
-      .select('business_id')
-      .eq('user_id', user.id)
-
-    const businessIds = (memberships.data ?? []).map((m: any) => m.business_id).filter(Boolean)
-    const byMembership = businessIds.length
-      ? await supabase
-          .from('businesses')
-          .select('id, slug, name, health_score, updated_at')
-          .in('id', businessIds)
-          .order('updated_at', { ascending: false })
-      : { data: [] as any[] }
-
-    const merged = new Map<string, any>()
-    for (const b of owned.data ?? []) merged.set(b.id, b)
-    for (const b of byMembership.data ?? []) merged.set(b.id, b)
-    let list = Array.from(merged.values())
-    if (list.length === 0) {
-      const { data: pub } = await supabase
-        .from('businesses')
-        .select('id, slug, name, health_score, updated_at')
-        .eq('is_public', true)
-        .order('updated_at', { ascending: false })
-        .limit(8)
-      list = (pub ?? []) as any
-    }
-    clients = list as any
+    clients = (owned ?? []) as any
   }
 
   return (
@@ -166,7 +140,7 @@ export default async function AmbassadorDashboardPage() {
                 </form>
               </div>
             )}
-            <Link href="/audit" className="text-xs text-blue-600 hover:underline">Search</Link>
+            <Link href="/dashboard/audit/search" className="text-xs text-blue-600 hover:underline">Search</Link>
             <Link href="/pipeline/leads/new" className="text-xs text-blue-600 hover:underline">Add Lead</Link>
           </div>
         </div>
@@ -248,7 +222,7 @@ export default async function AmbassadorDashboardPage() {
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         {!grComplete && (
-                          <Link href={`/audit?${prefill}`} className="text-blue-600 hover:underline">
+                          <Link href={`/dashboard/audit/search?${prefill}&leadId=${l.id}`} className="text-blue-600 hover:underline">
                             Audit
                           </Link>
                         )}

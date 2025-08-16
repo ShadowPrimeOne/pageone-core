@@ -1,6 +1,9 @@
 -- Audit flow tables
 -- Created: 2025-08-13
 
+-- Required for gen_random_uuid()
+create extension if not exists pgcrypto;
+
 create table if not exists business_profiles (
   id uuid primary key default gen_random_uuid(),
   lead_id uuid null,

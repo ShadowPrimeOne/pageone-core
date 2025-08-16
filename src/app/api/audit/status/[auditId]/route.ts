@@ -20,7 +20,7 @@ export async function GET(_req: Request, { params }: { params: { auditId: string
     const { data: biz } = await supabase
       .from('business_profiles')
       .select('id, golden_name, golden_address, golden_phone, website, place_cid')
-      .eq('id', audit.business_id)
+      .eq('business_id', audit.business_id)
       .single()
 
     // Count related records

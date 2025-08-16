@@ -3,9 +3,9 @@ import { notFound } from 'next/navigation'
 
 async function getStatus(auditId: string) {
   try {
-    const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL ?? ''}/api/audit/status/${auditId}`, { cache: 'no-store' })
-    if (!res.ok) throw new Error('status failed')
-    const json = await res.json()
+    const res = await fetch(`/api/audit/status/${auditId}`, { cache: 'no-store' })
+    // Attempt to parse JSON regardless of status to surface error messages
+    const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
     return json
   } catch {
     return { ok: false, error: 'Status unavailable' }
@@ -16,6 +16,7 @@ export default async function AuditWizardPage({ params }: { params: { auditId: s
   const auditId = params.auditId
   if (!auditId) return notFound()
   const status = await getStatus(auditId)
+  const biz = (status as any)?.data?.business
 
   return (
     <main className="p-6">
@@ -26,6 +27,30 @@ export default async function AuditWizardPage({ params }: { params: { auditId: s
         <section className="rounded border p-4">
           <h2 className="text-sm font-medium text-gray-700">1) NAP Confirmation</h2>
           <p className="mt-1 text-xs text-gray-500">Selected Golden NAP from Places. You can re-run search if needed.</p>
+          {!(status as any)?.ok && (
+            <div className="mt-2 text-xs text-red-600">{(status as any)?.error || 'Status fetch failed'}</div>
+          )}
+          {biz ? (
+            <div className="mt-3 grid gap-1 text-sm">
+              <div><span className="font-medium">Name:</span> {biz.golden_name ?? '—'}</div>
+              <div><span className="font-medium">Address:</span> {biz.golden_address ?? '—'}</div>
+              <div><span className="font-medium">Phone:</span> {biz.golden_phone ?? '—'}</div>
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-gray-500">
+                {biz.website && (<a className="text-blue-600 hover:underline" href={biz.website} target="_blank" rel="noreferrer">Website</a>)}
+                {biz.place_cid && (<span>CID: {biz.place_cid}</span>)}
+              </div>
+              <div className="mt-2">
+                <a
+                  className="text-blue-600 hover:underline text-xs"
+                  href={`/dashboard/audit/search?name=${encodeURIComponent(biz.golden_name ?? '')}&address=${encodeURIComponent(biz.golden_address ?? '')}&phone=${encodeURIComponent(biz.golden_phone ?? '')}`}
+                >
+                  Re-run search with current NAP
+                </a>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-3 text-sm text-gray-500">No Golden NAP stored yet.</div>
+          )}
         </section>
 
         <section className="rounded border p-4">

@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useEffect } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
 
 type PlaceCandidate = {
   position: number
@@ -27,6 +28,15 @@ export default function AuditSearchRootPage() {
   const [loading, setLoading] = useState(false)
   const [candidates, setCandidates] = useState<PlaceCandidate[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [userId, setUserId] = useState<string | null>(null)
+
+  // Load current user id when available
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data }) => {
+      setUserId(data.user?.id ?? null)
+    }).catch(() => setUserId(null))
+  }, [])
 
   // Prefill from query
   useEffect(() => {
@@ -68,7 +78,7 @@ export default function AuditSearchRootPage() {
       const res = await fetch('/api/audit/places/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ candidate: c })
+        body: JSON.stringify({ candidate: c, ownerId: userId || undefined, ambassadorId: userId || undefined })
       })
       const json = (await res.json()) as ApiResponse<{ auditId: string; businessId: string }>
       if (!res.ok || !('ok' in json) || !json.ok) throw new Error((json as any).error || 'Confirm failed')

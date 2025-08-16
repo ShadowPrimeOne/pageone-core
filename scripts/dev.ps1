@@ -96,48 +96,105 @@ if (Test-Path ".next") {
 # Clear environment caches if any
 $env:NODE_OPTIONS = ""
 
-# --- Scraper worker tunnel + env bootstrap ---
+# Helper: read a var from .env.local (basic parser: NAME=VALUE, ignores # comments)
+function Get-EnvLocalVar {
+  param([string]$Name)
+  $envFile = Join-Path $PWD.Path ".env.local"
+  if (-not (Test-Path $envFile)) { return $null }
+  try {
+    $lines = Get-Content -Path $envFile -ErrorAction Stop
+    foreach ($line in $lines) {
+      $t = $line.Trim()
+      if (-not $t -or $t.StartsWith('#')) { continue }
+      $eq = $t.IndexOf('=')
+      if ($eq -lt 1) { continue }
+      $k = $t.Substring(0, $eq).Trim()
+      $v = $t.Substring($eq+1).Trim()
+      if ($k -ieq $Name) { return $v }
+    }
+  } catch { }
+  return $null
+}
+
+# Helper: quick health check for scraper worker
+function Test-WorkerHealth {
+  param([string]$BaseUrl, [int]$TimeoutSec = 3)
+  if (-not $BaseUrl) { return $false }
+  $healthUrl = "$BaseUrl/health"
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec $TimeoutSec -Uri $healthUrl
+    if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { return $true }
+  } catch { }
+  return $false
+}
+
+# --- Scraper worker URL resolution + optional tunnel ---
+# Skip worker checks entirely if using Serper provider for Golden Record search
+$goldenProvider = $env:GOLDEN_SEARCH_PROVIDER
+if (-not $goldenProvider -or [string]::IsNullOrWhiteSpace($goldenProvider)) {
+  $goldenProvider = Get-EnvLocalVar -Name "GOLDEN_SEARCH_PROVIDER"
+}
+$useSerper = $false
+try { if ($goldenProvider -and $goldenProvider.ToLowerInvariant() -eq 'serper') { $useSerper = $true } } catch { $useSerper = $false }
+
 $ScraperKeyPath    = "$env:USERPROFILE\.ssh\pageone_ed25519"
 $ScraperRemoteUser = "shadow_prime_one"
 $ScraperRemoteHost = "34.9.45.190"
 $ScraperLocalPort  = 8878
 $ScraperRemotePort = 8787
 
-# Export env vars so the spawned Next.js dev inherits them
-$env:SCRAPER_WORKER_URL = "http://127.0.0.1:$ScraperLocalPort"
+if ($useSerper) {
+  Write-Host "GOLDEN_SEARCH_PROVIDER=serper -> skipping scraper worker health check and tunnel" -ForegroundColor Yellow
+} else {
+# Resolve SCRAPER_WORKER_URL from env, .env.local, or fallback to localhost (tunnel)
+$resolvedUrl = $env:SCRAPER_WORKER_URL
+if (-not $resolvedUrl -or [string]::IsNullOrWhiteSpace($resolvedUrl)) {
+  $resolvedUrl = Get-EnvLocalVar -Name "SCRAPER_WORKER_URL"
+}
+if (-not $resolvedUrl -or [string]::IsNullOrWhiteSpace($resolvedUrl)) {
+  $resolvedUrl = "http://127.0.0.1:$ScraperLocalPort"
+}
+
+$env:SCRAPER_WORKER_URL = $resolvedUrl
 $env:WORKER_TIMEOUT_MS  = "10000"
 
+# Decide if we need an SSH tunnel (only when targeting localhost:8878)
+$useTunnel = $false
 try {
-  $listener = Get-NetTCPConnection -LocalPort $ScraperLocalPort -State Listen -ErrorAction SilentlyContinue
-} catch { $listener = $null }
+  $u = [Uri]$resolvedUrl
+  $dnsHost = $u.DnsSafeHost.ToLowerInvariant()
+  $resolvedPort = if ($u.IsDefaultPort) { if ($u.Scheme -eq 'https') { 443 } else { 80 } } else { $u.Port }
+  if (($dnsHost -eq '127.0.0.1' -or $dnsHost -eq 'localhost') -and $resolvedPort -eq $ScraperLocalPort) { $useTunnel = $true }
+} catch { $useTunnel = $false }
 
-if (-not $listener) {
-  if (Test-Path $ScraperKeyPath) {
-    Write-Host "Ensuring SSH tunnel $($ScraperLocalPort) -> $($ScraperRemoteHost):$($ScraperRemotePort)" -ForegroundColor Cyan
-    $sshArgs = "-i `"$ScraperKeyPath`" -N -L $($ScraperLocalPort):127.0.0.1:$($ScraperRemotePort) $ScraperRemoteUser@$ScraperRemoteHost"
-    Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Hidden | Out-Null
-
-    # Wait until healthy (max ~10s)
-    $healthy = $false
-    for ($i=0; $i -lt 10; $i++) {
-      Start-Sleep -Seconds 1
-      try {
-        $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 "http://127.0.0.1:$ScraperLocalPort/health"
-        if ($r.Content -match '"ok":true') { $healthy = $true; break }
-      } catch { }
-    }
-    if (-not $healthy) {
-      Write-Host "Warning: Scraper tunnel did not become healthy on 127.0.0.1:$ScraperLocalPort" -ForegroundColor Yellow
+if ($useTunnel) {
+  try { $listener = Get-NetTCPConnection -LocalPort $ScraperLocalPort -State Listen -ErrorAction SilentlyContinue } catch { $listener = $null }
+  if (-not $listener) {
+    if (Test-Path $ScraperKeyPath) {
+      Write-Host "Ensuring SSH tunnel $($ScraperLocalPort) -> $($ScraperRemoteHost):$($ScraperRemotePort)" -ForegroundColor Cyan
+      $sshArgs = "-i `"$ScraperKeyPath`" -N -L $($ScraperLocalPort):127.0.0.1:$($ScraperRemotePort) $ScraperRemoteUser@$ScraperRemoteHost"
+      Start-Process -FilePath "ssh" -ArgumentList $sshArgs -WindowStyle Hidden | Out-Null
+      # Wait until healthy (max ~10s)
+      $healthy = $false
+      for ($i=0; $i -lt 10; $i++) { Start-Sleep -Seconds 1; if (Test-WorkerHealth -BaseUrl $resolvedUrl -TimeoutSec 3) { $healthy = $true; break } }
+      if (-not $healthy) { Write-Host "Warning: Scraper tunnel did not become healthy on $resolvedUrl" -ForegroundColor Yellow }
+      else { Write-Host "Scraper tunnel is ready on $resolvedUrl" -ForegroundColor Green }
     } else {
-      Write-Host "Scraper tunnel is ready on http://127.0.0.1:$ScraperLocalPort" -ForegroundColor Green
+      Write-Host "SSH key not found at $ScraperKeyPath; skipping tunnel. Set SCRAPER_WORKER_URL to a reachable URL (e.g., http://<vm-ip>:8787)." -ForegroundColor Yellow
     }
   } else {
-    Write-Host "SSH key not found at $ScraperKeyPath; skipping tunnel. Set SCRAPER_WORKER_URL manually if needed." -ForegroundColor Yellow
+    Write-Host "SSH tunnel already listening on 127.0.0.1:$ScraperLocalPort" -ForegroundColor Green
   }
 } else {
-  Write-Host "SSH tunnel already listening on 127.0.0.1:$ScraperLocalPort" -ForegroundColor Green
+  Write-Host "Using remote scraper: $resolvedUrl (no tunnel)" -ForegroundColor Green
+  if (Test-WorkerHealth -BaseUrl $resolvedUrl -TimeoutSec 3) {
+    Write-Host "Scraper health OK at $resolvedUrl/health" -ForegroundColor Green
+  } else {
+    Write-Host "Warning: Could not reach $resolvedUrl/health (will still start Next.js)." -ForegroundColor Yellow
+  }
 }
-# --- end tunnel + env bootstrap ---
+# --- end scraper bootstrap (Serper or Worker) ---
+# --- end scraper bootstrap ---
 
 Write-Host "Starting Next.js dev server on http://localhost:$Port" -ForegroundColor Green
 # Launch background job to wait for server then open Chrome

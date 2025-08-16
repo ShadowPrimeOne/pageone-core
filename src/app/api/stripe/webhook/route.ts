@@ -34,15 +34,28 @@ async function upsertBusinessAndConvert(
     if (!businessId) throw new Error('Could not create business with a unique slug')
   }
 
-  // Ensure owner_id is set on an existing business if not set yet
+  // Ensure owner_id is set/updated to the lead's owner/ambassador
   const ownerId = (lead.owner_id ?? lead.ambassador_id) ?? null
   if (ownerId) {
     await supabase
       .from('businesses')
       .update({ owner_id: ownerId })
       .eq('id', businessId)
-      .is('owner_id', null)
   }
+
+  // Align with convertLeadCore: set golden profile, advance pipeline, and start trial
+  const nowIso = new Date().toISOString()
+  const trialEnds = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString()
+  await supabase
+    .from('businesses')
+    .update({
+      golden_profile: (lead.golden_record ?? null),
+      pipeline_stage: 'onboarded',
+      membership: 'trial',
+      trial_started_at: nowIso,
+      trial_ends_at: trialEnds,
+    })
+    .eq('id', businessId)
 
   // Ensure membership for owner (ambassador or dev)
   if (ownerId) {

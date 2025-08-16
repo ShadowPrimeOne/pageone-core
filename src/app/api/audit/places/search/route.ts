@@ -1,5 +1,25 @@
 import { NextResponse } from 'next/server'
 
+function extractCid(u: string): string | undefined {
+  try {
+    const url = new URL(u)
+    const cid = url.searchParams.get('cid')
+    if (cid) return cid
+  } catch {}
+  try {
+    const m = u.match(/:0x[0-9a-f]+/i)
+    if (m) return m[0].slice(1)
+  } catch {}
+  return undefined
+}
+
+function extractPhoneAu(text?: string): string | undefined {
+  if (!text) return undefined
+  // Simple AU phone patterns: +61 X..., or 0X... with separators
+  const m = text.match(/(\+61\s?\d[\d\s-]{7,12}|0\d[\d\s-]{7,10})/)
+  return m ? m[1].trim() : undefined
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}))
@@ -10,6 +30,61 @@ export async function POST(request: Request) {
 
     const qParts = [name, address, phone].filter(Boolean)
     const queryStr = qParts.join(' ').trim()
+
+    // Optional first-line: Serper.dev provider
+    const provider = (process.env.GOLDEN_SEARCH_PROVIDER || '').toLowerCase()
+    if (provider === 'serper') {
+      const apiKey = process.env.SERPER_API_KEY
+      const baseUrl = 'https://google.serper.dev/search'
+      const gl = (process.env.SERPER_GL || 'au').toLowerCase()
+      const hl = process.env.SERPER_HL || 'en'
+
+      async function serperQuery(type: 'maps' | 'places') {
+        const u = new URL(baseUrl)
+        u.searchParams.set('q', queryStr)
+        u.searchParams.set('type', type)
+        u.searchParams.set('gl', gl)
+        // page/num are optional; defaults are fine for our use-case
+        const headers: Record<string, string> = { 'Accept': 'application/json' }
+        if (apiKey) headers['X-API-KEY'] = apiKey
+        // Serper also supports apiKey in query; only add if no header key present
+        if (!apiKey) u.searchParams.set('apiKey', process.env.SERPER_API_KEY_QUERY || '')
+        const res = await fetch(u.toString(), { headers, cache: 'no-store' })
+        if (!res.ok) return { ok: false as const, data: null as any }
+        const json = await res.json().catch(() => ({}))
+        const places: any[] = Array.isArray(json?.places) ? json.places : []
+        const candidates = places.slice(0, 10).map((r: any, i: number) => ({
+          position: r.position ?? i + 1,
+          title: r.title || r.name || queryStr || 'Result',
+          address: r.address || r.formattedAddress || undefined,
+          latitude: r.latitude,
+          longitude: r.longitude,
+          website: r.website || undefined,
+          phoneNumber: r.phoneNumber || r.phone || undefined,
+          category: r.type || r.category || (Array.isArray(r.types) ? r.types[0] : undefined),
+          rating: r.rating || undefined,
+          ratingCount: r.ratingCount || r.user_ratings_total || undefined,
+          cid: r.cid || undefined,
+          raw: r,
+          // Note: placeId/fid/openingHours exist on maps type, but our contract doesn't require them here
+        }))
+        return { ok: true as const, candidates, places }
+      }
+
+      try {
+        // Prefer richer MAPS payload; fallback to PLACES if empty
+        let first = await serperQuery('maps')
+        if (!first.ok || (Array.isArray(first.candidates) && first.candidates.length === 0)) {
+          first = await serperQuery('places')
+        }
+        if (first.ok) {
+          return NextResponse.json({ ok: true, data: { candidates: first.candidates, provider: 'serper', allResults: first.places } })
+        }
+        // else fall through to worker path
+      } catch {
+        // ignore and continue to worker fallback
+      }
+    }
 
     // Prefer Playwright worker if available; defaults to local worker if not configured
     const base = process.env.SCRAPER_WORKER_URL || 'http://localhost:8787'
@@ -31,27 +106,15 @@ export async function POST(request: Request) {
         }
         const data = await res.json()
         const results: any[] = Array.isArray(data?.results) ? data.results : []
-        const extractCid = (u: string): string | undefined => {
-          try {
-            const url = new URL(u)
-            const cid = url.searchParams.get('cid')
-            if (cid) return cid
-          } catch {}
-          try {
-            const m = u.match(/:0x[0-9a-f]+/i)
-            if (m) return m[0].slice(1)
-          } catch {}
-          return undefined
-        }
         const candidates = results.slice(0, 10).map((r, i) => ({
           position: i + 1,
           title: r.title || queryStr || 'Result',
-          address: undefined,
-          website: undefined,
-          phoneNumber: undefined,
-          category: undefined,
-          rating: undefined,
-          ratingCount: undefined,
+          address: r.address || r.location || r.content || undefined,
+          website: r.website || undefined,
+          phoneNumber: r.phoneNumber || r.phone || undefined,
+          category: r.category || undefined,
+          rating: r.rating || undefined,
+          ratingCount: r.ratingCount || r.reviews || undefined,
           cid: typeof r?.url === 'string' ? extractCid(r.url) : undefined,
           sourceUrl: r?.url,
         }))
@@ -88,12 +151,14 @@ export async function POST(request: Request) {
           const url = new URL(r.url)
           cid = url.searchParams.get('cid') ?? undefined
         } catch {}
+        const addr: string | undefined = r.content || undefined
+        const phoneGuess = extractPhoneAu(r.content)
         return {
           position: i + 1,
           title: r.title || r.pretty_url || 'Result',
-          address: r.content || undefined,
+          address: addr,
           website: undefined,
-          phoneNumber: undefined,
+          phoneNumber: phoneGuess,
           category: undefined,
           rating: undefined,
           ratingCount: undefined,
