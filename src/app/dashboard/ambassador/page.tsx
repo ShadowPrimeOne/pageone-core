@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { createPayment, seedDemoLeads, assignLeadOwner, nukeLeadsAndClients } from './actions'
 import AssignOwnerSelect from '@/components/AssignOwnerSelect'
+import PipelineSearchModal from '@/components/audit/PipelineSearchModal'
 
 export const dynamic = 'force-dynamic'
 
@@ -140,7 +141,7 @@ export default async function AmbassadorDashboardPage() {
                 </form>
               </div>
             )}
-            <Link href="/dashboard/audit/search" className="text-xs text-blue-600 hover:underline">Search</Link>
+            <PipelineSearchModal buttonLabel="Search" variant="link" />
             <Link href="/pipeline/leads/new" className="text-xs text-blue-600 hover:underline">Add Lead</Link>
           </div>
         </div>
@@ -173,11 +174,9 @@ export default async function AmbassadorDashboardPage() {
                 const responded = agr ? (Boolean(agr.signed_at) || ['signed','accepted','agreed','approved','completed','checked'].includes((agr.status ?? '').toLowerCase())) : false
                 const paid = l.payment_id ? (Boolean(paymentsMap.get(l.payment_id)?.paid_at) || ['paid','succeeded'].includes((paymentsMap.get(l.payment_id)?.status ?? ''))) : false
                 const gr = l.golden_record ?? {}
-                const prefill = new URLSearchParams({
-                  name: gr.name ?? '',
-                  address: gr.address ?? '',
-                  phone: Array.isArray(gr.phones) && gr.phones.length ? (gr.phones[0] ?? '') : (gr.phone ?? '')
-                }).toString()
+                const prefillName = gr.name ?? ''
+                const prefillAddress = gr.address ?? ''
+                const prefillPhone = (Array.isArray(gr.phones) && gr.phones.length ? (gr.phones[0] ?? '') : (gr.phone ?? '')) as string
                 return (
                   <tr key={l.id} className="border-t">
                     <td className="px-3 py-2">{name}</td>
@@ -222,7 +221,10 @@ export default async function AmbassadorDashboardPage() {
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         {!grComplete && (
-                          <Link href={`/dashboard/audit/search?${prefill}&leadId=${l.id}`} className="text-blue-600 hover:underline">
+                          <Link
+                            href={`/dashboard/audit/search?name=${encodeURIComponent(prefillName)}&address=${encodeURIComponent(prefillAddress)}&phone=${encodeURIComponent(prefillPhone)}&leadId=${encodeURIComponent(l.id)}&goto=audit`}
+                            className="text-blue-600 hover:underline"
+                          >
                             Audit
                           </Link>
                         )}

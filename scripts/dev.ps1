@@ -195,6 +195,7 @@ if ($useTunnel) {
 }
 # --- end scraper bootstrap (Serper or Worker) ---
 # --- end scraper bootstrap ---
+}
 
 Write-Host "Starting Next.js dev server on http://localhost:$Port" -ForegroundColor Green
 # Launch background job to wait for server then open Chrome

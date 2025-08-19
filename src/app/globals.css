@@ -1,16 +1,75 @@
 @import "tailwindcss";
 
 :root {
+  /* Accents */
   --accent-1: #FF5BFF;
   --accent-2: #D34DEE;
   --accent-3: #BF4BF8;
   --accent-4: #2AC9F9;
   --accent-5: #56F1FF;
+
+  /* Light theme (default) */
+  --color-bg: #ffffff;
+  --color-text: #0f172a; /* slate-900 */
+  --color-muted: #64748b; /* slate-500 */
+  --color-surface: #ffffff; /* base panel */
+  --color-elevated: #ffffff; /* elevated panel */
+  --color-border: #e2e8f0; /* slate-200 */
+  --color-surface-hover: #f8fafc; /* slate-50 */
+  --color-surface-active: #f1f5f9; /* slate-100 */
+  --color-input: #ffffff;
+  --color-input-placeholder: #94a3b8; /* slate-400 */
 }
 
 @media (prefers-color-scheme: dark) {
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    /* Dark theme */
+    --color-bg: #0b1220; /* deep navy */
+    --color-text: #e5e7eb; /* gray-200 */
+    --color-muted: #9ca3af; /* gray-400 */
+    --color-surface: #0f172a; /* slate-900 */
+    --color-elevated: #111a2e; /* custom slightly lighter than bg */
+    --color-border: #24324d; /* custom border */
+    --color-surface-hover: #17223a; /* hover */
+    --color-surface-active: #1b2946; /* active */
+    --color-input: #0f172a;
+    --color-input-placeholder: #6b7280; /* gray-500 */
+  }
 }
 
 html, body { height: 100%; }
-body { font-family: ui-sans-serif, system-ui, sans-serif; }
+body {
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Centralized UI utility classes built on tokens */
+@layer components {
+  .ui-surface { background-color: var(--color-surface); color: var(--color-text); }
+  .ui-elevated { background-color: var(--color-elevated); color: var(--color-text); }
+  .ui-border { border-color: var(--color-border); border-style: solid; }
+  .ui-muted { color: var(--color-muted); }
+  .ui-active { background-color: var(--color-surface-active); }
+  .ui-hover:hover { background-color: var(--color-surface-hover); }
+  .ui-input {
+    border-radius: 0.375rem; /* rounded */
+    padding: 0.5rem 0.75rem; /* py-2 px-3 */
+    border-width: 1px;
+    background-color: var(--color-input);
+    color: var(--color-text);
+    border-color: var(--color-border);
+  }
+  .ui-input::placeholder { color: var(--color-input-placeholder); }
+  .ui-menu {
+    overflow: hidden;
+    border-width: 1px;
+    border-color: var(--color-border);
+    border-style: solid;
+    border-radius: 0.375rem;
+    background-color: var(--color-elevated);
+    color: var(--color-text);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25), 0 1px 2px rgba(0,0,0,0.12);
+  }
+}

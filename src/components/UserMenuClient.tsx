@@ -24,10 +24,10 @@ export default function UserMenuClient({ fullName, email, role }:{ fullName: str
         <span className="rounded bg-gray-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-700">{role || 'none'}</span>
       </button>
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-48 overflow-hidden rounded border bg-white shadow">
-          <div className="px-3 py-2 text-xs text-gray-600">{fullName || email}</div>
-          <div className="border-t" />
-          <a href="/dashboard" className="block px-3 py-2 text-sm hover:bg-gray-50">Profile</a>
+        <div className="absolute right-0 z-50 mt-2 w-48 ui-menu">
+          <div className="px-3 py-2 text-xs ui-muted">{fullName || email}</div>
+          <div className="border-t ui-border" />
+          <a href="/dashboard" className="block px-3 py-2 text-sm ui-hover">Profile</a>
           <div className="px-3 py-2"><SignOutButton /></div>
         </div>
       )}

@@ -61,7 +61,7 @@ export default function AssignOwnerSelect({
     <div className="relative" ref={ref}>
       <button
         type="button"
-        className="flex max-w-[220px] items-center justify-between gap-2 rounded border px-2 py-1 text-left text-xs hover:bg-gray-50"
+        className="flex max-w-[220px] items-center justify-between gap-2 rounded border ui-border ui-surface px-2 py-1 text-left text-xs ui-hover"
         onClick={() => setOpen(o => !o)}
       >
         <span className="truncate">{selectedLabel}</span>
@@ -71,20 +71,20 @@ export default function AssignOwnerSelect({
       </button>
       <input type="hidden" name={name} value={selected} readOnly />
       {open && (
-        <div className="absolute z-50 mt-1 w-64 rounded border bg-white p-2 shadow">
+        <div className="absolute z-50 mt-1 w-64 ui-menu p-2">
           <input
             autoFocus
             type="text"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search users..."
-            className="mb-2 w-full rounded border px-2 py-1 text-xs"
+            className="mb-2 w-full ui-input text-xs"
           />
-          <div className="max-h-40 overflow-auto rounded border">
+          <div className="max-h-40 overflow-auto rounded border ui-border">
             <button
               type="button"
               onClick={() => submitValue('')}
-              className={`block w-full px-2 py-1 text-left text-xs hover:bg-gray-50 ${selected === '' ? 'bg-gray-100' : ''}`}
+              className={`block w-full px-2 py-1 text-left text-xs ui-hover ${selected === '' ? 'ui-active' : ''}`}
             >
               Unassigned
             </button>
@@ -93,13 +93,13 @@ export default function AssignOwnerSelect({
                 key={o.id}
                 type="button"
                 onClick={() => submitValue(o.id)}
-                className={`block w-full px-2 py-1 text-left text-xs hover:bg-gray-50 ${selected === o.id ? 'bg-gray-100' : ''}`}
+                className={`block w-full px-2 py-1 text-left text-xs ui-hover ${selected === o.id ? 'ui-active' : ''}`}
               >
                 {o.label}
               </button>
             ))}
             {filtered.length === 0 && (
-              <div className="px-2 py-2 text-center text-xs text-gray-500">No results</div>
+              <div className="px-2 py-2 text-center text-xs ui-muted">No results</div>
             )}
           </div>
         </div>

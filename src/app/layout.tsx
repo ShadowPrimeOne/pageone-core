@@ -14,8 +14,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <div className="min-h-screen">
-          <header className="flex items-center justify-between border-b px-4 py-2">
+        <div className="min-h-screen ui-surface">
+          <header className="flex items-center justify-between border-b ui-border px-4 py-2">
             <Link href="/" className="text-sm font-semibold">PageOne</Link>
             <UserMenu />
           </header>
