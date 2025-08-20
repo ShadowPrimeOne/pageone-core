@@ -237,7 +237,7 @@ export async function POST(request: Request) {
       } finally { clearTimeout(to) }
     }
 
-    const allItems: Array<{ url: string; title?: string; content?: string; host: string; source_type: 'social'|'directory'|'places'|'web'; score?: number; rank?: number }> = []
+    const allItems: Array<{ url: string; title?: string; content?: string; host: string; source_type: 'social'|'directory'|'places'|'web'; provider?: string; engine?: string; score?: number; rank?: number }> = []
 
     // --- Tunables (env) for scoring and aggregation ---
     const FUZZY_NAME_MAX_BONUS = parseInt(process.env.FUZZY_NAME_MAX_BONUS || '6', 10)
@@ -582,7 +582,7 @@ export async function POST(request: Request) {
                         const host = hostOf(url)
                         if (!host) { badUrl++; continue }
                         const type = classifyHost(host)
-                        const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
+                        const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any, provider: 'serper', engine: 'google' }
                         const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
                         const item = { ...baseItem, score, rank: idx, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
                         allItems.push(item)
@@ -632,13 +632,13 @@ export async function POST(request: Request) {
                           if (websiteNormalized && (normSlash === websiteNormalized)) { excludedOwn++; continue }
                         } catch { badUrl++; continue }
                         const host = hostOf(url); if (!host) { badUrl++; continue }
-                        const type = classifyHost(host)
-                        const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
-                        const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
-                        const item = { ...baseItem, score, rank: idx, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
-                        allItems.push(item)
-                        send('item', item)
-                        emitted++
+                const type = classifyHost(host)
+                const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any, provider: 'serper', engine: 'google' }
+                const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
+                const item = { ...baseItem, score, rank: idx, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
+                allItems.push(item)
+                send('item', item)
+                emitted++
                       }
                       send('query:done', { provider: 'serper', q, elapsed, count: emitted, total: organic.length, badUrl, excludedOwn, mode: 'forced_social' })
                     }
@@ -660,7 +660,7 @@ export async function POST(request: Request) {
                 const h = p.host || hostOf(p.url)
                 if (!h) continue
                 const type = classifyHost(h)
-                const baseItem = { url: p.url, title: p.title, content: p.snippet, host: h, source_type: type as any }
+                const baseItem = { url: p.url, title: p.title, content: p.snippet, host: h, source_type: type as any, provider: 'serper', engine: 'google' }
                 const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
                 const item = { ...baseItem, score, rank: 1, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
                 allItems.push(item)
@@ -707,7 +707,7 @@ export async function POST(request: Request) {
                     const host = hostOf(r.url)
                     if (!host) { badUrl++; continue }
                     const type = classifyHost(host)
-                    const baseItem = { url: r.url, title: r.title, content: r.content, host, source_type: type as any }
+                    const baseItem = { url: r.url, title: r.title, content: r.content, host, source_type: type as any, provider: 'searxng', engine: (typeof r.engine === 'string' ? r.engine : undefined) }
                     const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
                     const item = { ...baseItem, score, rank: idx, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
                     allItems.push(item)
@@ -774,7 +774,7 @@ export async function POST(request: Request) {
                         const host = hostOf(url)
                         if (!host) { badUrl++; continue }
                         const type = classifyHost(host)
-                        const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
+                        const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any, provider: 'serper', engine: 'google' }
                         const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
                         const item = { ...baseItem, score, rank: idx, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
                         allItems.push(item)
@@ -935,7 +935,7 @@ export async function POST(request: Request) {
               const host = hostOf(url)
               if (!host) continue
               const type = classifyHost(host)
-              const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
+              const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any, provider: 'serper', engine: 'google' }
               const { score } = scoreItem(baseItem)
               allItems.push({ ...baseItem, score, rank: idx })
             }
@@ -952,7 +952,7 @@ export async function POST(request: Request) {
         const h = p.host || hostOf(p.url)
         if (!h) continue
         const type = classifyHost(h)
-        const baseItem = { url: p.url, title: p.title, content: p.snippet, host: h, source_type: type as any }
+        const baseItem = { url: p.url, title: p.title, content: p.snippet, host: h, source_type: type as any, provider: 'serper', engine: 'google' }
         const { score } = scoreItem(baseItem)
         allItems.push({ ...baseItem, score, rank: 1 })
       }
@@ -987,7 +987,7 @@ export async function POST(request: Request) {
         const host = hostOf(r.url)
         if (!host) continue
         const type = classifyHost(host)
-        const baseItem = { url: r.url, title: r.title, content: r.content, host, source_type: type as any }
+        const baseItem = { url: r.url, title: r.title, content: r.content, host, source_type: type as any, provider: 'searxng', engine: (typeof r.engine === 'string' ? r.engine : undefined) }
         const { score } = scoreItem(baseItem)
         allItems.push({ ...baseItem, score, rank: idx })
         emitted++
@@ -1034,7 +1034,7 @@ export async function POST(request: Request) {
               const host = hostOf(url)
               if (!host) continue
               const type = classifyHost(host)
-              const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
+              const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any, provider: 'serper', engine: 'google' }
               const { score } = scoreItem(baseItem)
               allItems.push({ ...baseItem, score, rank: idx })
             }

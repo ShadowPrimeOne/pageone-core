@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-type UrlItem = { url: string; title?: string; content?: string; host: string; source_type: 'social'|'directory'|'places'|'web'; score?: number; rank?: number; exact?: boolean; bigram?: boolean; phone?: boolean; geo?: boolean; wrongLocation?: boolean; occupationOnly?: boolean; jobBoard?: boolean }
+type UrlItem = { url: string; title?: string; content?: string; host: string; source_type: 'social'|'directory'|'places'|'web'; provider?: string; engine?: string; score?: number; rank?: number; exact?: boolean; bigram?: boolean; phone?: boolean; geo?: boolean; wrongLocation?: boolean; occupationOnly?: boolean; jobBoard?: boolean }
 
 type Observation = {
   source_url: string
@@ -39,6 +39,15 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
   const [socials, setSocials] = useState<Record<string, string>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [obsInclude, setObsInclude] = useState<Record<string, boolean>>({})
+  const [negFilterEnabled, setNegFilterEnabled] = useState<boolean>(false)
+  const [negFilterText, setNegFilterText] = useState<string>('')
+  const [hideBlacklisted, setHideBlacklisted] = useState<boolean>(true)
+  const [blacklist, setBlacklist] = useState<string[]>([])
+  const [blacklistInput, setBlacklistInput] = useState<string>('')
+  const [showBlacklist, setShowBlacklist] = useState<boolean>(false)
+  // SearXNG stats panel state
+  const [searxStats, setSearxStats] = useState<{ base: string, stats: any } | null>(null)
+  const [searxLoading, setSearxLoading] = useState<boolean>(false)
 
   const normUrl = useCallback((u: string) => {
     try { const x = new URL(u); x.search=''; x.hash=''; return `${x.protocol}//${x.host}${x.pathname}` } catch { return u }
@@ -47,12 +56,13 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
   const detectSocialKey = useCallback((u: string): { key: string | null } => {
     try {
       const h = new URL(u).hostname.replace(/^www\./, '')
-      if (h.includes('facebook.com')) return { key: 'facebook' }
-      if (h.includes('instagram.com')) return { key: 'instagram' }
-      if (h.includes('linkedin.com')) return { key: 'linkedin' }
-      if (h.includes('x.com') || h.includes('twitter.com')) return { key: 'x' }
-      if (h.includes('youtube.com') || h.includes('youtu.be')) return { key: 'youtube' }
-      if (h.includes('tiktok.com')) return { key: 'tiktok' }
+      const md = (d: string) => h === d || h.endsWith(`.${d}`)
+      if (md('facebook.com')) return { key: 'facebook' }
+      if (md('instagram.com')) return { key: 'instagram' }
+      if (md('linkedin.com')) return { key: 'linkedin' }
+      if (md('x.com') || md('twitter.com')) return { key: 'x' }
+      if (md('youtube.com') || md('youtu.be')) return { key: 'youtube' }
+      if (md('tiktok.com')) return { key: 'tiktok' }
       return { key: null }
     } catch { return { key: null } }
   }, [])
@@ -60,6 +70,67 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [...prev.slice(-200), `${new Date().toLocaleTimeString()} — ${msg}`])
   }, [])
+
+  const negTokens = useMemo(() => (
+    (negFilterText || '')
+      .split(',')
+      .map(s => s.trim().toLowerCase())
+      .filter(s => s.length > 0)
+  ), [negFilterText])
+
+  const matchesNeg = useCallback((u: UrlItem) => {
+    if (!negFilterEnabled || negTokens.length === 0) return false
+    const hay = `${u.title || ''} ${u.content || ''} ${u.url} ${u.host}`.toLowerCase()
+    return negTokens.some(tok => hay.includes(tok))
+  }, [negFilterEnabled, negTokens])
+
+  const normDomain = useCallback((d: string) => (d || '').trim().toLowerCase().replace(/^https?:\/\//,'').replace(/^www\./,''), [])
+  const hostOf = useCallback((u: string) => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./,'') } catch { return '' } }, [])
+  const isBlacklisted = useCallback((u: UrlItem) => {
+    const h = (hostOf(u.url) || (u.host || '').toLowerCase().replace(/^www\./,''))
+    if (!h) return false
+    for (const d of blacklist) {
+      const dom = normDomain(d)
+      if (!dom) continue
+      if (h === dom || h.endsWith(`.${dom}`)) return true
+    }
+    return false
+  }, [blacklist, hostOf, normDomain])
+
+  // Load/save blacklist and hide preference
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem('discovery:blacklist')
+      if (raw) {
+        const arr = JSON.parse(raw)
+        if (Array.isArray(arr)) setBlacklist(arr.map((s: string) => normDomain(s)))
+      } else {
+        setBlacklist(['realestate.com.au', 'domain.com.au'])
+      }
+    } catch { setBlacklist(['realestate.com.au', 'domain.com.au']) }
+    try {
+      const hb = localStorage.getItem('discovery:hideBlacklisted')
+      setHideBlacklisted(hb ? hb === '1' : true)
+    } catch { setHideBlacklisted(true) }
+  }, [normDomain])
+
+  useEffect(() => {
+    try { localStorage.setItem('discovery:blacklist', JSON.stringify(blacklist.map(normDomain))) } catch {}
+  }, [blacklist, normDomain])
+  useEffect(() => {
+    try { localStorage.setItem('discovery:hideBlacklisted', hideBlacklisted ? '1' : '0') } catch {}
+  }, [hideBlacklisted])
+
+  const addToBlacklist = useCallback(() => {
+    const d = normDomain(blacklistInput)
+    if (!d) return
+    setBlacklist(prev => Array.from(new Set([...(prev||[]), d])))
+    setBlacklistInput('')
+  }, [blacklistInput, normDomain])
+  const removeFromBlacklist = useCallback((d: string) => {
+    const nd = normDomain(d)
+    setBlacklist(prev => (prev || []).filter(x => normDomain(x) !== nd))
+  }, [normDomain])
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -77,6 +148,65 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
   }, [auditId])
 
   useEffect(() => { refreshStatus() }, [refreshStatus])
+
+  // SearXNG stats fetcher
+  const refreshSearxStats = useCallback(async () => {
+    try {
+      setSearxLoading(true)
+      const res = await fetch('/api/searxng/stats', { cache: 'no-store' })
+      const json = await res.json()
+      if (json?.ok) setSearxStats(json.data)
+      else setSearxStats(null)
+    } catch {
+      setSearxStats(null)
+    } finally {
+      setSearxLoading(false)
+    }
+  }, [])
+  useEffect(() => { refreshSearxStats() }, [refreshSearxStats])
+
+  // Try to derive a list of engine names from SearXNG stats
+  const searxEngines = useMemo((): string[] => {
+    const s = searxStats?.stats
+    if (!s) return []
+    try {
+      if (Array.isArray((s as any)?.engines)) {
+        return (s as any).engines.map((e: any) => e?.name || e?.engine).filter(Boolean)
+      }
+      if ((s as any)?.engines && typeof (s as any).engines === 'object') {
+        return Object.keys((s as any).engines)
+      }
+      if ((s as any)?.engine_stats && typeof (s as any).engine_stats === 'object') {
+        return Object.keys((s as any).engine_stats)
+      }
+    } catch {}
+    return []
+  }, [searxStats])
+
+  // When negative filter is enabled, proactively deselect matching items
+  useEffect(() => {
+    if (!discovery || !negFilterEnabled) return
+    setKeep(prev => {
+      const next = { ...prev }
+      for (const u of discovery) {
+        if (matchesNeg(u)) next[normUrl(u.url)] = false
+      }
+      return next
+    })
+  }, [discovery, negFilterEnabled, matchesNeg, normUrl])
+
+  // Always deselect items that fall below the current threshold
+  useEffect(() => {
+    if (!discovery) return
+    setKeep(prev => {
+      const next = { ...prev }
+      for (const u of discovery) {
+        const key = normUrl(u.url)
+        if ((u.score ?? 0) < threshold) next[key] = false
+      }
+      return next
+    })
+  }, [discovery, threshold, normUrl])
 
   const runDiscovery = useCallback(async () => {
     setLoading(l => ({ ...l, discovery: true }))
@@ -106,7 +236,7 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
           const next = { ...prev }
           for (const u of urls) {
             const key = normUrl(u.url)
-            if (next[key] === undefined) next[key] = ((u.score ?? 0) >= threshold)
+            if (next[key] === undefined) next[key] = ((u.score ?? 0) >= threshold) && !matchesNeg(u) && !isBlacklisted(u)
           }
           return next
         })
@@ -125,7 +255,7 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
         if (seen.has(key)) return
         seen.add(key)
         items.push({ ...it, url: key })
-        setKeep(prev => ({ ...prev, [key]: prev[key] ?? ((it.score ?? 0) >= threshold) }))
+        setKeep(prev => ({ ...prev, [key]: prev[key] ?? (((it.score ?? 0) >= threshold) && !matchesNeg(it) && !isBlacklisted(it)) }))
         setDiscovery([...items].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)))
         setProgress({ total: items.length, done: items.length })
         addLog(`+ ${it.source_type}: ${key}`)
@@ -330,6 +460,28 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
 
   return (
     <div className="mt-3">
+      {/* SearXNG status panel */}
+      <div className="mb-2 p-2 rounded ui-border">
+        <div className="text-xs ui-muted flex items-center gap-2 flex-wrap">
+          <span className="mr-1">SearXNG</span>
+          <span className="px-2 py-0.5 ui-surface ui-border rounded">{searxStats?.base || '—'}</span>
+          <button className="ui-surface ui-border ui-hover rounded px-2 py-0.5 text-xs disabled:opacity-50" onClick={refreshSearxStats} disabled={searxLoading}>
+            {searxLoading ? 'Refreshing…' : 'Refresh'}
+          </button>
+          {searxStats?.base ? (
+            <a className="text-blue-700 hover:underline text-xs" href={`${searxStats.base}/stats`} target="_blank" rel="noreferrer">Open stats</a>
+          ) : null}
+        </div>
+        <div className="mt-1 text-[11px] text-gray-700 flex gap-1 flex-wrap">
+          {searxEngines && searxEngines.length > 0 ? (
+            searxEngines.slice(0, 14).map((n, i) => (
+              <span key={`${n}-${i}`} className="ui-surface ui-border rounded px-1.5 py-0.5">{n}</span>
+            ))
+          ) : (
+            <span className="ui-muted">No engine info</span>
+          )}
+        </div>
+      </div>
       <div className="flex gap-2 mb-2">
         <button className="ui-surface ui-border ui-hover rounded px-3 py-1 text-xs disabled:opacity-50" onClick={runDiscovery} disabled={!!loading.discovery}>Run discovery</button>
         <button className="ui-surface ui-border ui-hover rounded px-3 py-1 text-xs disabled:opacity-50" onClick={startScrape} disabled={!!loading.scrape || !discovery?.length}>Start scrape</button>
@@ -383,13 +535,39 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
               <input type="checkbox" checked={hideLow} onChange={e => setHideLow(e.target.checked)} />
               <span>Hide below threshold</span>
             </label>
-            <button className="ui-surface ui-border ui-hover rounded px-2 py-0.5 text-xs" onClick={() => setKeep(Object.fromEntries((discovery||[]).map(u => [normUrl(u.url), (u.score ?? 0) >= threshold])))}>Select ≥ threshold</button>
+            <button className="ui-surface ui-border ui-hover rounded px-2 py-0.5 text-xs" onClick={() => setKeep(Object.fromEntries((discovery||[]).map(u => [
+              normUrl(u.url),
+              ((u.score ?? 0) >= threshold) && (!negFilterEnabled || !matchesNeg(u)) && (!hideBlacklisted || !isBlacklisted(u))
+            ])))}>Select ≥ threshold</button>
             <button className="ui-surface ui-border ui-hover rounded px-2 py-0.5 text-xs" onClick={() => setKeep(Object.fromEntries((discovery||[]).map(u => [normUrl(u.url), false])))}>Select none</button>
             <span className="mx-1">•</span>
             <label className="flex items-center gap-1"><input type="checkbox" checked={filterExact} onChange={e => setFilterExact(e.target.checked)} /> <span>Exact name</span></label>
             <label className="flex items-center gap-1"><input type="checkbox" checked={filterPhone} onChange={e => setFilterPhone(e.target.checked)} /> <span>Has phone</span></label>
             <label className="flex items-center gap-1"><input type="checkbox" checked={filterGeo} onChange={e => setFilterGeo(e.target.checked)} /> <span>Has geo</span></label>
+            <span className="mx-1">•</span>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={negFilterEnabled} onChange={e => setNegFilterEnabled(e.target.checked)} /> <span>Neg filter</span></label>
+            <input className="ui-input w-64 text-xs" type="text" placeholder="comma-separated negative keywords" value={negFilterText} onChange={e => setNegFilterText(e.target.value)} disabled={!negFilterEnabled} />
+            <span className="mx-1">•</span>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={hideBlacklisted} onChange={e => setHideBlacklisted(e.target.checked)} /> <span>Hide blacklisted</span></label>
+            <button className="ui-surface ui-border ui-hover rounded px-2 py-0.5 text-xs" onClick={() => setShowBlacklist(s => !s)}>{showBlacklist ? 'Hide' : 'Manage'} blacklist</button>
           </div>
+          {showBlacklist && (
+            <div className="mb-2 p-2 rounded ui-border">
+              <div className="text-[11px] text-gray-700 mb-2">Add domains to hide from results (e.g. realestate.com.au). Subdomains are also hidden.</div>
+              <div className="flex items-center gap-2 mb-2">
+                <input className="ui-input w-64 text-xs" type="text" placeholder="e.g. realestate.com.au" value={blacklistInput} onChange={e => setBlacklistInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') addToBlacklist() }} />
+                <button className="ui-surface ui-border ui-hover rounded px-2 py-0.5 text-xs" onClick={addToBlacklist}>Add</button>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {blacklist.length === 0 ? <span className="ui-muted text-xs">No domains blacklisted</span> : blacklist.map((d, i) => (
+                  <span key={`${d}-${i}`} className="ui-surface ui-border rounded px-2 py-0.5 text-xs flex items-center gap-2">
+                    <span>{d}</span>
+                    <button className="text-red-700 hover:underline" onClick={() => removeFromBlacklist(d)} title={`Remove ${d}`}>×</button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="overflow-auto rounded ui-border">
             <table className="min-w-full text-xs">
               <thead className="bg-gray-50">
@@ -398,6 +576,7 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
                   <th className="px-2 py-1 text-left">Toggle</th>
                   <th className="px-2 py-1 text-left">Score</th>
                   <th className="px-2 py-1 text-left">Type</th>
+                  <th className="px-2 py-1 text-left">Source</th>
                   <th className="px-2 py-1 text-left">Result</th>
                   <th className="px-2 py-1 text-left">Actions</th>
                 </tr>
@@ -408,16 +587,28 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
                   .filter(u => filterExact ? !!u.exact : true)
                   .filter(u => filterPhone ? !!u.phone : true)
                   .filter(u => filterGeo ? !!u.geo : true)
+                  .filter(u => negFilterEnabled ? !matchesNeg(u) : true)
+                  .filter(u => hideBlacklisted ? !isBlacklisted(u) : true)
                   .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
                 ).map((u, i) => {
                   const key = normUrl(u.url)
                   const checked = !!keep[key]
                   const isOpen = !!expanded[key]
+                  const below = (u.score ?? 0) < threshold
                   return (
                     <React.Fragment key={i}>
                       <tr className="border-t align-top">
                         <td className="px-2 py-1">
-                          <input type="checkbox" checked={checked} onChange={e => setKeep(prev => ({ ...prev, [key]: e.target.checked }))} />
+                          <input
+                            type="checkbox"
+                            checked={checked && !below}
+                            disabled={below}
+                            title={below ? 'Below threshold' : undefined}
+                            onChange={e => {
+                              if (below) return
+                              setKeep(prev => ({ ...prev, [key]: e.target.checked }))
+                            }}
+                          />
                         </td>
                         <td className="px-2 py-1 w-12">
                           <button
@@ -428,6 +619,7 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
                         </td>
                         <td className="px-2 py-1 w-16">{u.score ?? '—'}</td>
                         <td className="px-2 py-1"><span className="rounded ui-surface ui-border px-2 py-0.5">{u.source_type}</span></td>
+                        <td className="px-2 py-1 w-32"><span className="rounded ui-surface ui-border px-2 py-0.5">{u.provider ? `${u.provider}${u.engine ? ` (${u.engine})` : ''}` : '—'}</span></td>
                         <td className="px-2 py-1 max-w-[540px]">
                           <div className="flex items-center gap-2 min-w-0">
                             <a className="text-blue-600 hover:underline truncate" href={u.url} target="_blank" rel="noreferrer" title={u.title || u.url}>{u.title || u.url}</a>
@@ -463,13 +655,14 @@ export default function DiscoveryAndScrapeClient({ auditId, businessId }: { audi
                       </tr>
                       {isOpen && (
                         <tr className="bg-gray-50">
-                          <td className="px-2 py-2" colSpan={6}>
+                          <td className="px-2 py-2" colSpan={7}>
                             <div className="text-[11px] text-gray-700 space-y-1">
                               <div className="font-semibold truncate" title={u.title || ''}>{u.title || '—'}</div>
                               <div className="whitespace-pre-wrap break-words">{u.content || '— (no snippet provided by search)'}</div>
                               <div className="text-gray-600 flex gap-4 flex-wrap pt-1">
                                 <span><span className="text-gray-500">Host:</span> {u.host}</span>
                                 <span><span className="text-gray-500">Type:</span> {u.source_type}</span>
+                                <span><span className="text-gray-500">Source:</span> {u.provider ? `${u.provider}${u.engine ? ` (${u.engine})` : ''}` : '—'}</span>
                                 <span><span className="text-gray-500">Rank:</span> {u.rank ?? '—'}</span>
                                 <span><span className="text-gray-500">Score:</span> {u.score ?? '—'}</span>
                                 <span><span className="text-gray-500">URL:</span> <a className="text-blue-600 hover:underline" href={u.url} target="_blank" rel="noreferrer">{u.url}</a></span>
