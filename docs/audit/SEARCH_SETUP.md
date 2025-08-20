@@ -203,3 +203,10 @@ Behavior:
 - [ ] Windows: (only if using tunnel) SSH key at `%USERPROFILE%\.ssh\pageone_ed25519`
 - [ ] Dev script: `npm --prefix C:\Pageone\pageone-core run dev:win` (auto-detects remote and skips tunnel)
 - [ ] API: `/api/audit/places/search` returns candidates with `cid`
+
+## Related docs
+
+- `docs/audit/DISCOVERY_SETUP.md` — Discovery flow, env, probes, scoring
+- `docs/audit/AUDIT_FLOW_TESTING.md` — End-to-end testing (payloads, SSE, curl)
+- `docs/audit/AU_DIRECTORIES.md` — Platform list and how to add/remove directories
+- `docs/audit/SEARXNG_DOCKER_VM_SETUP.md` — SearXNG hardening and networking

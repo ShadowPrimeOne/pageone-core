@@ -128,14 +128,24 @@ function Test-WorkerHealth {
   return $false
 }
 
+# Helper: quick health check for SearXNG
+function Test-SearxHealth {
+  param([string]$BaseUrl, [int]$TimeoutSec = 3)
+  if (-not $BaseUrl) { return $false }
+  try {
+    $url = ($BaseUrl.TrimEnd('/') + '/search?q=test&format=json&limit=1&language=en-AU')
+    $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec $TimeoutSec -Uri $url -Headers @{ 'Accept' = 'application/json' }
+    if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { return $true }
+  } catch { }
+  return $false
+}
+
 # --- Scraper worker URL resolution + optional tunnel ---
-# Skip worker checks entirely if using Serper provider for Golden Record search
+# Always resolve scraper URL (scraping depends on it even if GOLDEN provider is serper)
 $goldenProvider = $env:GOLDEN_SEARCH_PROVIDER
 if (-not $goldenProvider -or [string]::IsNullOrWhiteSpace($goldenProvider)) {
   $goldenProvider = Get-EnvLocalVar -Name "GOLDEN_SEARCH_PROVIDER"
 }
-$useSerper = $false
-try { if ($goldenProvider -and $goldenProvider.ToLowerInvariant() -eq 'serper') { $useSerper = $true } } catch { $useSerper = $false }
 
 $ScraperKeyPath    = "$env:USERPROFILE\.ssh\pageone_ed25519"
 $ScraperRemoteUser = "shadow_prime_one"
@@ -143,16 +153,22 @@ $ScraperRemoteHost = "34.9.45.190"
 $ScraperLocalPort  = 8878
 $ScraperRemotePort = 8787
 
-if ($useSerper) {
-  Write-Host "GOLDEN_SEARCH_PROVIDER=serper -> skipping scraper worker health check and tunnel" -ForegroundColor Yellow
-} else {
-# Resolve SCRAPER_WORKER_URL from env, .env.local, or fallback to localhost (tunnel)
+# Prefer public worker if reachable; else fall back to local tunnel
+$publicDefault = "http://${ScraperRemoteHost}:${ScraperRemotePort}"
+
 $resolvedUrl = $env:SCRAPER_WORKER_URL
 if (-not $resolvedUrl -or [string]::IsNullOrWhiteSpace($resolvedUrl)) {
   $resolvedUrl = Get-EnvLocalVar -Name "SCRAPER_WORKER_URL"
 }
 if (-not $resolvedUrl -or [string]::IsNullOrWhiteSpace($resolvedUrl)) {
-  $resolvedUrl = "http://127.0.0.1:$ScraperLocalPort"
+  $resolvedUrl = $publicDefault
+  try {
+    if (-not (Test-WorkerHealth -BaseUrl $resolvedUrl -TimeoutSec 2)) {
+      $resolvedUrl = "http://127.0.0.1:$ScraperLocalPort"
+    }
+  } catch {
+    $resolvedUrl = "http://127.0.0.1:$ScraperLocalPort"
+  }
 }
 
 $env:SCRAPER_WORKER_URL = $resolvedUrl
@@ -167,6 +183,23 @@ try {
   if (($dnsHost -eq '127.0.0.1' -or $dnsHost -eq 'localhost') -and $resolvedPort -eq $ScraperLocalPort) { $useTunnel = $true }
 } catch { $useTunnel = $false }
 
+# If targeting a non-local worker and it's unhealthy, auto-fallback to local tunnel
+if (-not $useTunnel) {
+  try {
+    if (-not (Test-WorkerHealth -BaseUrl $resolvedUrl -TimeoutSec 2)) {
+      $resolvedUrl = "http://127.0.0.1:$ScraperLocalPort"
+      $env:SCRAPER_WORKER_URL = $resolvedUrl
+      $useTunnel = $true
+      Write-Host "Public worker unreachable. Falling back to local tunnel at $resolvedUrl" -ForegroundColor Yellow
+    }
+  } catch {
+    $resolvedUrl = "http://127.0.0.1:$ScraperLocalPort"
+    $env:SCRAPER_WORKER_URL = $resolvedUrl
+    $useTunnel = $true
+    Write-Host "Error probing public worker. Falling back to local tunnel at $resolvedUrl" -ForegroundColor Yellow
+  }
+}
+
 if ($useTunnel) {
   try { $listener = Get-NetTCPConnection -LocalPort $ScraperLocalPort -State Listen -ErrorAction SilentlyContinue } catch { $listener = $null }
   if (-not $listener) {
@@ -180,21 +213,45 @@ if ($useTunnel) {
       if (-not $healthy) { Write-Host "Warning: Scraper tunnel did not become healthy on $resolvedUrl" -ForegroundColor Yellow }
       else { Write-Host "Scraper tunnel is ready on $resolvedUrl" -ForegroundColor Green }
     } else {
-      Write-Host "SSH key not found at $ScraperKeyPath; skipping tunnel. Set SCRAPER_WORKER_URL to a reachable URL (e.g., http://<vm-ip>:8787)." -ForegroundColor Yellow
+      Write-Host "SSH key not found at $ScraperKeyPath; skipping tunnel. Set SCRAPER_WORKER_URL to a reachable URL (e.g., $publicDefault)." -ForegroundColor Yellow
     }
   } else {
     Write-Host "SSH tunnel already listening on 127.0.0.1:$ScraperLocalPort" -ForegroundColor Green
   }
 } else {
-  Write-Host "Using remote scraper: $resolvedUrl (no tunnel)" -ForegroundColor Green
+  Write-Host "Using scraper: $resolvedUrl (no tunnel)" -ForegroundColor Green
   if (Test-WorkerHealth -BaseUrl $resolvedUrl -TimeoutSec 3) {
     Write-Host "Scraper health OK at $resolvedUrl/health" -ForegroundColor Green
   } else {
     Write-Host "Warning: Could not reach $resolvedUrl/health (will still start Next.js)." -ForegroundColor Yellow
   }
 }
-# --- end scraper bootstrap (Serper or Worker) ---
 # --- end scraper bootstrap ---
+
+# --- SearXNG base URL setup ---
+$resolvedSearx = $env:SEARXNG_BASE_URL
+if (-not $resolvedSearx -or [string]::IsNullOrWhiteSpace($resolvedSearx)) {
+  $resolvedSearx = Get-EnvLocalVar -Name "SEARXNG_BASE_URL"
+}
+if (-not $resolvedSearx -or [string]::IsNullOrWhiteSpace($resolvedSearx)) {
+  $resolvedSearx = "https://searxng.pageone.live"
+}
+$env:SEARXNG_BASE_URL = $resolvedSearx
+if (Test-SearxHealth -BaseUrl $resolvedSearx -TimeoutSec 3) {
+  Write-Host "SearXNG OK at $resolvedSearx" -ForegroundColor Green
+} else {
+  # Try HTTP fallback if HTTPS failed
+  $httpFallback = $null
+  if ($resolvedSearx -like 'https://*') {
+    $httpFallback = 'http://' + $resolvedSearx.Substring(8)
+  }
+  if ($httpFallback -and (Test-SearxHealth -BaseUrl $httpFallback -TimeoutSec 3)) {
+    $resolvedSearx = $httpFallback
+    $env:SEARXNG_BASE_URL = $resolvedSearx
+    Write-Host "SearXNG OK (HTTP fallback) at $resolvedSearx" -ForegroundColor Yellow
+  } else {
+    Write-Host "Warning: Could not reach SearXNG at $resolvedSearx (continuing)" -ForegroundColor Yellow
+  }
 }
 
 Write-Host "Starting Next.js dev server on http://localhost:$Port" -ForegroundColor Green

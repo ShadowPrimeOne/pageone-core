@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
-export async function GET(_req: Request, { params }: { params: { auditId: string } }) {
+export async function GET(_req: Request, ctx: { params: Promise<{ auditId: string }> }) {
   try {
-    const auditId = params.auditId
+    const { auditId } = await ctx.params
     if (!auditId) return NextResponse.json({ ok: false, error: 'Missing auditId' }, { status: 400 })
 
     const supabase = createAdminClient()
@@ -19,7 +21,7 @@ export async function GET(_req: Request, { params }: { params: { auditId: string
     // Fetch business profile basics
     const { data: biz } = await supabase
       .from('business_profiles')
-      .select('id, golden_name, golden_address, golden_phone, website, place_cid')
+      .select('id, golden_name, golden_address, golden_phone, website, place_cid, socials')
       .eq('business_id', audit.business_id)
       .single()
 

@@ -50,8 +50,8 @@ async function getStatus(auditId: string) {
   }
 }
 
-export default async function AuditWizardPage({ params }: { params: { auditId: string } }) {
-  const auditId = params.auditId
+export default async function AuditWizardPage({ params }: { params: Promise<{ auditId: string }> }) {
+  const { auditId } = await params
   if (!auditId) return notFound()
   const status = await getStatus(auditId)
   const biz = (status as any)?.data?.business

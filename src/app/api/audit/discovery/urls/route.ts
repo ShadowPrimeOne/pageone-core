@@ -15,28 +15,118 @@ const JOB_BOARD_HOSTS = [
 ]
 
 function hostOf(u: string): string | null { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return null } }
+
+function buildFacebookQueries(input: { name?: string|null; cityGuess?: string|null; state?: string|null }) {
+  const { name, cityGuess, state } = input
+  const vname = (name || '')
+  const noApos = vname.replace(/[’']/g, '')
+  const simple = normalizeSimple(noApos)
+  const variants = new Set<string>([vname, noApos, simple])
+  const queries: string[] = []
+  const hosts = ['facebook.com', 'm.facebook.com']
+  for (const h of hosts) {
+    for (const nm of Array.from(variants).filter(Boolean).slice(0, 2)) {
+      if (cityGuess) queries.push(`site:${h} "${nm}" ${cityGuess}`)
+      if (state) queries.push(`site:${h} "${nm}" ${state}`)
+      queries.push(`site:${h} "${nm}"`)
+    }
+  }
+  return Array.from(new Set(queries))
+}
 function classifyHost(host: string): 'social'|'directory'|'places'|'web' {
-  if (KNOWN_MAPS.some(d => host.endsWith(d)) || /google\.[^/]*\/maps/i.test(host)) return 'places'
-  if (KNOWN_SOCIAL.some(d => host.endsWith(d))) return 'social'
-  if (KNOWN_DIRECTORIES.some(d => host.endsWith(d))) return 'directory'
+  const matchDomain = (h: string, d: string) => h === d || h.endsWith(`.${d}`)
+  if (KNOWN_MAPS.some(d => matchDomain(host, d)) || /google\.[^/]*\/maps/i.test(host)) return 'places'
+  if (KNOWN_SOCIAL.some(d => matchDomain(host, d))) return 'social'
+  if (KNOWN_DIRECTORIES.some(d => matchDomain(host, d))) return 'directory'
   return 'web'
+}
+
+// --- Fuzzy helpers ---
+function stripDiacritics(s: string): string {
+  try { return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '') } catch { return s }
+}
+function normalizeSimple(s?: string|null): string {
+  return stripDiacritics((s||'').toLowerCase()).replace(/[^a-z0-9\s&-]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+function generateNameVariants(name?: string|null): string[] {
+  const base = normalizeSimple(name)
+  if (!base) return []
+  const variants = new Set<string>()
+  variants.add(base)
+  // no apostrophes/hyphens already handled by normalizeSimple punctuation removal
+  const ampToAnd = base.replace(/\s*&\s*/g, ' and ')
+  variants.add(ampToAnd)
+  const hyphToSpace = base.replace(/-/g, ' ')
+  variants.add(hyphToSpace)
+  const noSpaces = base.replace(/\s+/g, '')
+  variants.add(noSpaces)
+  return Array.from(variants).filter(v => v)
+}
+// Bounded Damerau-Levenshtein distance with early exit (good for short tokens)
+function dlDistance(a: string, b: string, maxDist = 2): number {
+  if (a === b) return 0
+  const la = a.length, lb = b.length
+  if (Math.abs(la - lb) > maxDist) return maxDist + 1
+  if (la === 0 || lb === 0) return Math.max(la, lb)
+  const INF = la + lb
+  const da: Record<string, number> = {}
+  const max = Math.max(la, lb)
+  const d: number[][] = Array.from({ length: la + 2 }, () => new Array(lb + 2).fill(0))
+  d[0][0] = INF
+  for (let i = 0; i <= la; i++) { d[i+1][1] = i; d[i+1][0] = INF }
+  for (let j = 0; j <= lb; j++) { d[1][j+1] = j; d[0][j+1] = INF }
+  for (let i = 1; i <= la; i++) {
+    let db = 0
+    for (let j = 1; j <= lb; j++) {
+      const i1 = da[b[j-1]] || 0
+      const j1 = db
+      let cost = 1
+      if (a[i-1] === b[j-1]) { cost = 0; db = j }
+      d[i+1][j+1] = Math.min(
+        d[i][j] + cost,             // substitution
+        d[i+1][j] + 1,               // insertion
+        d[i][j+1] + 1,               // deletion
+        d[i1][j1] + (i - i1 - 1) + 1 + (j - j1 - 1) // transposition
+      )
+    }
+    da[a[i-1]] = i
+    // early exit band check
+    if (Math.min(...d[i+1].slice(1, lb+2)) > maxDist) return maxDist + 1
+  }
+  return d[la+1][lb+1]
 }
 
 function buildQueries(input: { name?: string|null; address?: string|null; phone?: string|null; websiteHost?: string|null; cityGuess?: string|null; }) {
   const q: string[] = []
   const { name, address, phone, websiteHost, cityGuess } = input
+  const nameNoApos = name ? name.replace(/[’']/g, '') : null
+  const nameVariants = generateNameVariants(name)
+  const phoneDigits = (phone || '').replace(/\D/g, '')
   const state = stateFromAddress(address)
   const postcode = postcodeFromAddress(address)
-  if (name && phone) q.push(`"${name}" ${phone}`)
+  if (name && phoneDigits) q.push(`"${name}" ${phoneDigits}`)
   if (name && address) q.push(`"${name}" ${address}`)
   if (name && cityGuess) q.push(`"${name}" ${cityGuess}`)
   if (name && cityGuess && state) q.push(`"${name}" ${cityGuess} ${state}`)
   if (name && cityGuess) q.push(`${name} ${cityGuess} site:.au`)
   if (name && state) q.push(`${name} ${state} site:.au`)
+  // Apostrophe-less variants to catch queries like "heiners bakery"
+  if (nameNoApos && nameNoApos !== name) {
+    q.push(`"${nameNoApos}"`)
+    if (cityGuess) q.push(`"${nameNoApos}" ${cityGuess}`)
+    if (state) q.push(`${nameNoApos} ${state} site:.au`)
+  }
+  // Additional fuzzy name variants (limited to avoid explosion)
+  for (const v of nameVariants.slice(0, 2)) { // only first two variants
+    if (v !== normalizeSimple(name || '')) {
+      if (cityGuess) q.push(`"${v}" ${cityGuess}`)
+      else q.push(`"${v}"`)
+    }
+  }
   // Phone-only broad queries (web + AU bias)
-  if (phone) {
-    q.push(`${phone}`)
-    q.push(`${phone} site:.au`)
+  if (phoneDigits) {
+    q.push(`${phoneDigits}`)
+    q.push(`${phoneDigits} site:.au`)
   }
   // Address-only broad queries (quoted to reduce noise)
   if (address) {
@@ -53,7 +143,18 @@ function buildQueries(input: { name?: string|null; address?: string|null; phone?
   for (const d of KNOWN_SOCIAL) {
     if (name && cityGuess) q.push(`site:${d} "${name}" ${cityGuess}`)
     if (name) q.push(`site:${d} "${name}"`)
-    if (phone) q.push(`site:${d} ${phone}`)
+    if (nameNoApos && nameNoApos !== name) {
+      if (cityGuess) q.push(`site:${d} "${nameNoApos}" ${cityGuess}`)
+      q.push(`site:${d} "${nameNoApos}"`)
+    }
+    // a couple of fuzzy variants for social hosts
+    for (const v of nameVariants.slice(0, 1)) {
+      if (v) {
+        if (cityGuess) q.push(`site:${d} "${v}" ${cityGuess}`)
+        q.push(`site:${d} "${v}"`)
+      }
+    }
+    if (phoneDigits) q.push(`site:${d} ${phoneDigits}`)
     if (address) {
       const firstLine = address.split(',')[0]?.trim()
       if (firstLine) q.push(`site:${d} "${firstLine}"`)
@@ -62,7 +163,7 @@ function buildQueries(input: { name?: string|null; address?: string|null; phone?
   for (const d of KNOWN_DIRECTORIES) {
     if (name && cityGuess) q.push(`site:${d} "${name}" ${cityGuess}`)
     if (name) q.push(`site:${d} "${name}"`)
-    if (phone) q.push(`site:${d} ${phone}`)
+    if (phoneDigits) q.push(`site:${d} ${phoneDigits}`)
     if (address) q.push(`site:${d} "${address}"`)
   }
   // De-dup (do not add -site filter; we will filter exact website URL later)
@@ -138,6 +239,47 @@ export async function POST(request: Request) {
 
     const allItems: Array<{ url: string; title?: string; content?: string; host: string; source_type: 'social'|'directory'|'places'|'web'; score?: number; rank?: number }> = []
 
+    // --- Tunables (env) for scoring and aggregation ---
+    const FUZZY_NAME_MAX_BONUS = parseInt(process.env.FUZZY_NAME_MAX_BONUS || '6', 10)
+    const MIN_ITEM_SCORE_DEFAULT = parseInt(process.env.MIN_ITEM_SCORE || '16', 10)
+    const MIN_ITEM_SCORE_SOCIAL = parseInt(process.env.MIN_ITEM_SCORE_SOCIAL || String(MIN_ITEM_SCORE_DEFAULT), 10)
+    const MIN_ITEM_SCORE_DIRECTORY = parseInt(process.env.MIN_ITEM_SCORE_DIRECTORY || String(MIN_ITEM_SCORE_DEFAULT), 10)
+    const MIN_ITEM_SCORE_PLACES = parseInt(process.env.MIN_ITEM_SCORE_PLACES || String(MIN_ITEM_SCORE_DEFAULT), 10)
+    const MIN_ITEM_SCORE_WEB = parseInt(process.env.MIN_ITEM_SCORE_WEB || String(MIN_ITEM_SCORE_DEFAULT), 10)
+
+    const CAP_DEFAULT = parseInt(process.env.PER_HOST_CAP_DEFAULT || '4', 10)
+    const CAP_SOCIAL = parseInt(process.env.PER_HOST_CAP_SOCIAL || String(CAP_DEFAULT), 10)
+    const CAP_DIRECTORY = parseInt(process.env.PER_HOST_CAP_DIRECTORY || String(CAP_DEFAULT), 10)
+    const CAP_PLACES = parseInt(process.env.PER_HOST_CAP_PLACES || String(CAP_DEFAULT), 10)
+    const CAP_WEB = parseInt(process.env.PER_HOST_CAP_WEB || String(CAP_DEFAULT), 10)
+
+    const parseHostOverrides = (s?: string|null): Record<string, number> => {
+      const out: Record<string, number> = {}
+      if (!s) return out
+      for (const part of s.split(',').map(x => x.trim()).filter(Boolean)) {
+        const [k, v] = part.split(/[=:\s]/)
+        const n = parseInt((v||'').trim(), 10)
+        if (k && Number.isFinite(n)) out[k.trim()] = n
+      }
+      return out
+    }
+    const HOST_CAP_OVERRIDES = parseHostOverrides(process.env.HOST_CAP_OVERRIDES)
+
+    const minScoreFor = (t: 'social'|'directory'|'places'|'web') => (
+      t === 'social' ? MIN_ITEM_SCORE_SOCIAL :
+      t === 'directory' ? MIN_ITEM_SCORE_DIRECTORY :
+      t === 'places' ? MIN_ITEM_SCORE_PLACES :
+      MIN_ITEM_SCORE_WEB
+    )
+    const capFor = (host: string, t: 'social'|'directory'|'places'|'web') => (
+      HOST_CAP_OVERRIDES[host] ?? (
+        t === 'social' ? CAP_SOCIAL :
+        t === 'directory' ? CAP_DIRECTORY :
+        t === 'places' ? CAP_PLACES :
+        CAP_WEB
+      )
+    )
+
     // --- Relevance scoring helpers ---
     const brandTokens = (bp.golden_name || '').toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter((s: string) => Boolean(s))
     const brandPhrase = (bp.golden_name || '').toLowerCase().trim()
@@ -154,7 +296,7 @@ export async function POST(request: Request) {
     ]
     const tokenise = (s?: string) => (s||'').toLowerCase().replace(/[^a-z0-9\s-]/g, ' ').split(/\s+/).filter((t: string) => t.length>1)
     const containsAll = (need: string[], have: string[]) => need.every(n => have.includes(n))
-    const isJobBoard = (host: string) => JOB_BOARD_HOSTS.some(h => host.endsWith(h))
+    const isJobBoard = (host: string) => JOB_BOARD_HOSTS.some(d => host === d || host.endsWith(`.${d}`))
     const AU_STATE_SET = new Set(['ACT','NSW','NT','QLD','SA','TAS','VIC','WA'])
     const AU_MAJOR_CITIES = ['sydney','melbourne','brisbane','perth','adelaide','hobart','darwin','canberra']
     const OCCUPATION_WORDS = ['physiotherapy','physiotherapist','chiropractor','dentist','dental','doctor','gp','general practitioner','clinic','allied','health','massage','podiatry','podiatrist']
@@ -190,6 +332,25 @@ export async function POST(request: Request) {
 
         // Base token contributions
         let tokenScore = inTitle * 4 + inPath * 2 + inHost * 2
+
+        // Fuzzy token boosts: near-miss brand tokens in title/path/content
+        const combinedTokens = Array.from(new Set<string>([...titleT, ...pathT, ...contentT]))
+        let fuzzyScore = 0
+        for (const bt of brandTokens) {
+          if (combinedTokens.includes(bt)) continue
+          let best = Infinity
+          for (const ct of combinedTokens) {
+            // skip very short tokens for fuzzy to avoid noise
+            if (ct.length <= 2 || bt.length <= 2) continue
+            const md = dlDistance(bt, ct, 2)
+            if (md < best) best = md
+            if (best === 0) break
+          }
+          if (bt.length >= 4 && best === 1) fuzzyScore += 2
+          else if (bt.length >= 6 && best === 2) fuzzyScore += 1
+        }
+        fuzzyScore = Math.min(fuzzyScore, FUZZY_NAME_MAX_BONUS)
+        tokenScore += fuzzyScore
 
         // If brand is made of generic words, require phrase/bigram to trust higher scores
         const GENERIC = new Set(['north','east','south','west','steel','plumbing','electrical','electric','auto','services','pty','ltd'])
@@ -301,6 +462,33 @@ export async function POST(request: Request) {
         }
       }
 
+      // Facebook-specific heuristics: demote low-value content types and require geo support
+      if (item.host === 'facebook.com' || item.host === 'm.facebook.com') {
+        const p = urlObj.pathname.toLowerCase()
+        const fbIsGroup = /\/groups\//.test(p)
+        const fbIsReel = /\/(reel|reels|watch)\//.test(p)
+        const fbIsPost = /\/posts?\//.test(p) || /\/permalink\//.test(p) || /\/story\.php/.test(p)
+        const fbIsProfile = /\/people\//.test(p) || /\/profile\.php/.test(p)
+        const fbLowValue = fbIsGroup || fbIsReel || fbIsPost || fbIsProfile
+
+        // Demote low-value FB content unless strong supporting signals are present
+        if (fbLowValue && strongSupportCount === 0) {
+          score -= 12
+          score = Math.min(score, 18)
+        }
+
+        // Stronger wrong-geo guard on Facebook: if no geo support, penalize and cap a bit
+        if (!hasGeo) {
+          score -= 6
+          score = Math.min(score, 22)
+        }
+
+        // Small bonus for likely business pages (short slug or /pages/ paths)
+        const segs = p.split('/').filter(Boolean)
+        const fbLikelyPage = (!fbLowValue && (segs.length === 1 || p.startsWith('/pages/')))
+        if (fbLikelyPage) score += 2
+      }
+
       return { score, exact: hasExact, bigram, phone: hasContact, geo: hasGeo, wrongLocation, occupationOnly, jobBoard }
     }
 
@@ -334,8 +522,134 @@ export async function POST(request: Request) {
             const engines = process.env.SEARXNG_ENGINES || 'google,bing,brave,duckduckgo,mojeek'
             const perQueryLimit = parseInt(process.env.SEARXNG_PER_QUERY_LIMIT || '5', 10)
             const delayMs = parseInt(process.env.SEARXNG_QUERY_DELAY_MS || '800', 10)
-            send('meta', { provider: 'searxng', searx, engines, queries, limits: { perQueryLimit, delayMs } })
+            const SERPER_PARALLEL = (process.env.SERPER_PARALLEL || '').toLowerCase() === 'true' || process.env.SERPER_PARALLEL === '1'
+            const SERPER_PARALLEL_MAX_QUERIES = parseInt(process.env.SERPER_PARALLEL_MAX_QUERIES || '3', 10)
+            const SERPER_KEY_ENV = process.env.SERPER_API_KEY
+            const SERPER_GL = process.env.SERPER_GL || 'au'
+            const SERPER_HL = process.env.SERPER_HL || 'en'
+            const SOCIAL_SERPER_FORCE = (process.env.SOCIAL_SERPER_FORCE || '').toLowerCase() === 'true' || process.env.SOCIAL_SERPER_FORCE === '1'
+            const SOCIAL_SERPER_PER_QUERY = parseInt(process.env.SOCIAL_SERPER_PER_QUERY || '10', 10)
+            const SOCIAL_SERPER_MAX_QUERY_COUNT = parseInt(process.env.SOCIAL_SERPER_MAX_QUERY_COUNT || '3', 10)
+            send('meta', { provider: 'searxng', searx, engines, queries, limits: { perQueryLimit, delayMs }, serperParallel: SERPER_PARALLEL, serperMaxQueries: SERPER_PARALLEL_MAX_QUERIES })
             let searxItems = 0
+
+            // Parallel Serper enrichment task (optional)
+            async function runSerperEnrichment() {
+              if (!SERPER_KEY_ENV || !SERPER_PARALLEL) return
+              try {
+                send('meta', { provider: 'serper', reason: 'parallel', maxQueries: SERPER_PARALLEL_MAX_QUERIES })
+                // Prioritize a Facebook site query to better capture social presence
+                const goldenName = bp?.golden_name || ''
+                const nameNoApos2 = goldenName ? goldenName.replace(/[’']/g, '') : ''
+                const socialsPriority: string[] = []
+                if (nameNoApos2) {
+                  socialsPriority.push(cityGuess ? `site:facebook.com "${nameNoApos2}" ${cityGuess}` : `site:facebook.com "${nameNoApos2}"`)
+                }
+                const qEnrich = Array.from(new Set([...socialsPriority, ...queries])).slice(0, SERPER_PARALLEL_MAX_QUERIES)
+                for (const q of qEnrich) {
+                  const body = { q, gl: SERPER_GL, hl: SERPER_HL, autocorrect: true, num: perQueryLimit }
+                  send('query:start', { provider: 'serper', q, mode: 'parallel' })
+                  const started = Date.now()
+                  try {
+                    const r2 = await fetch('https://google.serper.dev/search', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'X-API-KEY': SERPER_KEY_ENV },
+                      body: JSON.stringify(body),
+                      cache: 'no-store'
+                    })
+                    const elapsed = Date.now() - started
+                    if (!r2.ok) {
+                      send('query:error', { provider: 'serper', q, status: r2.status, elapsed, mode: 'parallel' })
+                    } else {
+                      const data2: any = await r2.json().catch(() => ({} as any))
+                      const organic: any[] = Array.isArray(data2?.organic) ? data2.organic : []
+                      let emitted = 0
+                      let badUrl = 0
+                      let excludedOwn = 0
+                      let idx = 0
+                      for (const r of organic) {
+                        idx++
+                        const url = r?.link
+                        if (!url || typeof url !== 'string') { badUrl++; continue }
+                        try {
+                          const u0 = new URL(url)
+                          u0.search = ''
+                          u0.hash = ''
+                          const norm = `${u0.protocol}//${u0.host}${u0.pathname || '/'}`
+                          const normSlash = norm.endsWith('/') ? norm : `${norm}/`
+                          if (websiteNormalized && (normSlash === websiteNormalized)) { excludedOwn++; continue }
+                        } catch { badUrl++; continue }
+                        const host = hostOf(url)
+                        if (!host) { badUrl++; continue }
+                        const type = classifyHost(host)
+                        const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
+                        const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
+                        const item = { ...baseItem, score, rank: idx, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
+                        allItems.push(item)
+                        send('item', item)
+                        emitted++
+                      }
+                      send('query:done', { provider: 'serper', q, elapsed, count: emitted, total: organic.length, badUrl, excludedOwn, mode: 'parallel' })
+                    }
+                  } catch (e: any) {
+                    send('query:error', { provider: 'serper', q, error: e?.message || 'fetch_failed', mode: 'parallel' })
+                  }
+                }
+                send('serper:parallel:done', { queries: SERPER_PARALLEL_MAX_QUERIES })
+              } catch { /* ignore */ }
+            }
+            const serperTask = runSerperEnrichment()
+
+            // Forced Facebook-focused Serper queries (optional but independent)
+            async function runSerperFacebook() {
+              if (!SERPER_KEY_ENV || !SOCIAL_SERPER_FORCE) return
+              try {
+                const fbQueries = buildFacebookQueries({ name: bp?.golden_name, cityGuess, state: expectedState }).slice(0, SOCIAL_SERPER_MAX_QUERY_COUNT)
+                send('meta', { provider: 'serper', reason: 'forced_social', host: 'facebook.com', count: fbQueries.length })
+                for (const q of fbQueries) {
+                  const body = { q, gl: SERPER_GL, hl: SERPER_HL, autocorrect: true, num: SOCIAL_SERPER_PER_QUERY }
+                  send('query:start', { provider: 'serper', q, mode: 'forced_social' })
+                  const started = Date.now()
+                  try {
+                    const r2 = await fetch('https://google.serper.dev/search', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-KEY': SERPER_KEY_ENV }, body: JSON.stringify(body), cache: 'no-store'
+                    })
+                    const elapsed = Date.now() - started
+                    if (!r2.ok) {
+                      send('query:error', { provider: 'serper', q, status: r2.status, elapsed, mode: 'forced_social' })
+                    } else {
+                      const data2: any = await r2.json().catch(() => ({} as any))
+                      const organic: any[] = Array.isArray(data2?.organic) ? data2.organic : []
+                      let emitted = 0, badUrl = 0, excludedOwn = 0, idx = 0
+                      for (const r of organic) {
+                        idx++
+                        const url = r?.link
+                        if (!url || typeof url !== 'string') { badUrl++; continue }
+                        try {
+                          const u0 = new URL(url); u0.search = ''; u0.hash = ''
+                          const norm = `${u0.protocol}//${u0.host}${u0.pathname || '/'}`
+                          const normSlash = norm.endsWith('/') ? norm : `${norm}/`
+                          if (websiteNormalized && (normSlash === websiteNormalized)) { excludedOwn++; continue }
+                        } catch { badUrl++; continue }
+                        const host = hostOf(url); if (!host) { badUrl++; continue }
+                        const type = classifyHost(host)
+                        const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
+                        const { score, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard } = scoreItem(baseItem)
+                        const item = { ...baseItem, score, rank: idx, exact, bigram, phone, geo, wrongLocation, occupationOnly, jobBoard }
+                        allItems.push(item)
+                        send('item', item)
+                        emitted++
+                      }
+                      send('query:done', { provider: 'serper', q, elapsed, count: emitted, total: organic.length, badUrl, excludedOwn, mode: 'forced_social' })
+                    }
+                  } catch (e: any) {
+                    send('query:error', { provider: 'serper', q, error: e?.message || 'fetch_failed', mode: 'forced_social' })
+                  }
+                }
+                send('serper:forced_social:done', { host: 'facebook.com' })
+              } catch { /* ignore */ }
+            }
+            const serperFbTask = runSerperFacebook()
 
             // Deterministic AU directory probes via Serper (site-restricted)
             try {
@@ -410,15 +724,22 @@ export async function POST(request: Request) {
               await new Promise(r => setTimeout(r, delayMs))
             }
 
-            // Optional: Serper fallback when SearXNG produced zero items
+            // Optional: Serper fallback when SearXNG produced too few items
             try {
               const SERPER_KEY = process.env.SERPER_API_KEY
               const perQueryLimit = parseInt(process.env.SEARXNG_PER_QUERY_LIMIT || '5', 10)
-              if (SERPER_KEY && searxItems === 0) {
-                send('meta', { provider: 'serper', reason: 'fallback_no_searxng_results' })
-                const qFallbacks = queries.slice(0, 2) // keep it tight
+              const FALLBACK_MIN = parseInt(process.env.SERPER_MIN_RESULTS || '3', 10)
+              if (SERPER_KEY && searxItems < FALLBACK_MIN) {
+                send('meta', { provider: 'serper', reason: 'fallback_threshold', threshold: FALLBACK_MIN, searxItems })
+                // Include a Facebook site query in fallback attempts
+                const goldenNameF = bp?.golden_name || ''
+                const nameNoAposF = goldenNameF ? goldenNameF.replace(/[’']/g, '') : ''
+                const fbPref = nameNoAposF ? [cityGuess ? `site:facebook.com "${nameNoAposF}" ${cityGuess}` : `site:facebook.com "${nameNoAposF}"`] : []
+                const qFallbacks = Array.from(new Set([...fbPref, ...queries])).slice(0, 2) // keep it tight
                 for (const q of qFallbacks) {
-                  const body = { q, gl: 'au', hl: 'en', autocorrect: true, num: perQueryLimit }
+                  const gl = process.env.SERPER_GL || 'au'
+                  const hl = process.env.SERPER_HL || 'en'
+                  const body = { q, gl, hl, autocorrect: true, num: perQueryLimit }
                   send('query:start', { provider: 'serper', q })
                   const started = Date.now()
                   try {
@@ -469,6 +790,9 @@ export async function POST(request: Request) {
               }
             } catch { /* noop */ }
 
+            // Ensure parallel Serper enrichment has completed before aggregation
+            await Promise.allSettled([serperTask, serperFbTask])
+
             // Aggregate across queries by key (keep best score, add small boosts for repeat hits and higher ranks)
             type Agg = { sample: typeof allItems[number]; urlKey: string; bestScore: number; bestRank: number; hits: number }
             const agg = new Map<string, Agg>()
@@ -503,20 +827,37 @@ export async function POST(request: Request) {
               const finalScore = Math.round(a.bestScore + scale * (dupBoostRaw + rankBoostRaw))
               urlsPre.push({ ...a.sample, url: a.urlKey, score: finalScore })
             }
-            // Per-host cap (max 4)
-            const CAP = 4
+            // Per-host caps and per-type thresholds
             const urls: typeof allItems = []
             const perHost: Record<string, number> = {}
+            const preFiltered = urlsPre.filter(it => (it.score ?? 0) >= minScoreFor(it.source_type))
+            send('aggregate:pre', {
+              aggCandidates: agg.size,
+              preFiltered: preFiltered.length,
+              minScoreDefault: MIN_ITEM_SCORE_DEFAULT,
+              minScoreByType: { social: MIN_ITEM_SCORE_SOCIAL, directory: MIN_ITEM_SCORE_DIRECTORY, places: MIN_ITEM_SCORE_PLACES, web: MIN_ITEM_SCORE_WEB }
+            })
             // sort by score desc to keep best first
-            urlsPre.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-            for (const it of urlsPre) {
+            preFiltered.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+            let capDropped = 0
+            for (const it of preFiltered) {
               const h = it.host
               const n = perHost[h] || 0
-              if (n < CAP) {
+              const cap = capFor(h, it.source_type)
+              if (n < cap) {
                 urls.push(it)
                 perHost[h] = n + 1
+              } else {
+                capDropped++
               }
             }
+            send('aggregate:post', {
+              kept: urls.length,
+              capDefault: CAP_DEFAULT,
+              capByType: { social: CAP_SOCIAL, directory: CAP_DIRECTORY, places: CAP_PLACES, web: CAP_WEB },
+              hostOverrides: HOST_CAP_OVERRIDES,
+              capDropped
+            })
 
             const snapshot = { provider: 'searxng', queries, urls, capturedAt: new Date().toISOString() }
             if (auditId) {
@@ -544,10 +885,65 @@ export async function POST(request: Request) {
     }
 
     // Non-streaming mode (existing behavior) with timeouts and minimal diagnostics
-    const engines = process.env.SEARXNG_ENGINES || 'bing,brave,duckduckgo,mojeek'
+    const engines = process.env.SEARXNG_ENGINES || 'google,bing,brave,duckduckgo,mojeek'
     const perQueryLimit = parseInt(process.env.SEARXNG_PER_QUERY_LIMIT || '5', 10)
     const delayMs = parseInt(process.env.SEARXNG_QUERY_DELAY_MS || '800', 10)
+    const SERPER_PARALLEL = (process.env.SERPER_PARALLEL || '').toLowerCase() === 'true' || process.env.SERPER_PARALLEL === '1'
+    const SERPER_PARALLEL_MAX_QUERIES = parseInt(process.env.SERPER_PARALLEL_MAX_QUERIES || '3', 10)
+    const SERPER_KEY_ENV = process.env.SERPER_API_KEY
+    const SERPER_GL = process.env.SERPER_GL || 'au'
+    const SERPER_HL = process.env.SERPER_HL || 'en'
     let searxItems = 0
+
+    // Optional: fire Serper enrichment in parallel (non-streaming)
+    async function runSerperEnrichmentNS() {
+      if (!SERPER_KEY_ENV || !SERPER_PARALLEL) return
+      try {
+        // Prioritize a Facebook site query to better capture social presence
+        const goldenNameNS = bp?.golden_name || ''
+        const nameNoApos2 = goldenNameNS ? goldenNameNS.replace(/[’']/g, '') : ''
+        const socialsPriority: string[] = []
+        if (nameNoApos2) {
+          socialsPriority.push(cityGuess ? `site:facebook.com "${nameNoApos2}" ${cityGuess}` : `site:facebook.com "${nameNoApos2}"`)
+        }
+        const qEnrich = Array.from(new Set([...socialsPriority, ...queries])).slice(0, SERPER_PARALLEL_MAX_QUERIES)
+        for (const q of qEnrich) {
+          const body = { q, gl: SERPER_GL, hl: SERPER_HL, autocorrect: true, num: perQueryLimit }
+          try {
+            const r2 = await fetch('https://google.serper.dev/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'X-API-KEY': SERPER_KEY_ENV },
+              body: JSON.stringify(body),
+              cache: 'no-store'
+            })
+            if (!r2.ok) continue
+            const data2: any = await r2.json().catch(() => ({} as any))
+            const organic: any[] = Array.isArray(data2?.organic) ? data2.organic : []
+            let idx = 0
+            for (const r of organic) {
+              idx++
+              const url = r?.link
+              if (!url || typeof url !== 'string') continue
+              try {
+                const u0 = new URL(url)
+                u0.search = ''
+                u0.hash = ''
+                const norm = `${u0.protocol}//${u0.host}${u0.pathname || '/'}`
+                const normSlash = norm.endsWith('/') ? norm : `${norm}/`
+                if (websiteNormalized && (normSlash === websiteNormalized)) continue
+              } catch { continue }
+              const host = hostOf(url)
+              if (!host) continue
+              const type = classifyHost(host)
+              const baseItem = { url, title: r.title, content: r.snippet, host, source_type: type as any }
+              const { score } = scoreItem(baseItem)
+              allItems.push({ ...baseItem, score, rank: idx })
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
+    const serperTaskNS = runSerperEnrichmentNS()
 
     // Deterministic AU directory probes via Serper (site-restricted)
     try {
@@ -600,13 +996,18 @@ export async function POST(request: Request) {
       await new Promise(r => setTimeout(r, delayMs))
     }
 
-    // Optional: Serper fallback when SearXNG produced zero items
+    // Optional: Serper fallback when SearXNG produced too few items
     try {
       const SERPER_KEY = process.env.SERPER_API_KEY
-      if (SERPER_KEY && searxItems === 0) {
-        const qFallbacks = queries.slice(0, 2)
+      const FALLBACK_MIN = parseInt(process.env.SERPER_MIN_RESULTS || '3', 10)
+      if (SERPER_KEY && searxItems < FALLBACK_MIN) {
+        // Include a Facebook site query in fallback attempts
+        const goldenNameF = bp?.golden_name || ''
+        const nameNoAposF = goldenNameF ? goldenNameF.replace(/[’']/g, '') : ''
+        const fbPref = nameNoAposF ? [cityGuess ? `site:facebook.com "${nameNoAposF}" ${cityGuess}` : `site:facebook.com "${nameNoAposF}"`] : []
+        const qFallbacks = Array.from(new Set([...fbPref, ...queries])).slice(0, 2)
         for (const q of qFallbacks) {
-          const body = { q, gl: 'au', hl: 'en', autocorrect: true, num: perQueryLimit }
+          const body = { q, gl: SERPER_GL, hl: SERPER_HL, autocorrect: true, num: perQueryLimit }
           try {
             const r2 = await fetch('https://google.serper.dev/search', {
               method: 'POST',
@@ -642,6 +1043,9 @@ export async function POST(request: Request) {
       }
     } catch { /* noop */ }
 
+    // Ensure parallel Serper enrichment has completed before aggregation
+    await serperTaskNS.catch(() => {})
+
     // Aggregate across queries by key (keep best score, add small boosts for repeat hits and higher ranks)
     type Agg = { sample: typeof allItems[number]; urlKey: string; bestScore: number; bestRank: number; hits: number }
     const agg = new Map<string, Agg>()
@@ -676,15 +1080,16 @@ export async function POST(request: Request) {
       const finalScore = Math.round(a.bestScore + scale * (dupBoostRaw + rankBoostRaw))
       urlsPre.push({ ...a.sample, url: a.urlKey, score: finalScore })
     }
-    // Per-host cap (max 4)
-    const CAP = 4
+    // Per-host caps and per-type thresholds
     const urls: typeof allItems = []
     const perHost: Record<string, number> = {}
-    urlsPre.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
-    for (const it of urlsPre) {
+    const preFiltered = urlsPre.filter(it => (it.score ?? 0) >= minScoreFor(it.source_type))
+    preFiltered.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    for (const it of preFiltered) {
       const h = it.host
       const n = perHost[h] || 0
-      if (n < CAP) {
+      const cap = capFor(h, it.source_type)
+      if (n < cap) {
         urls.push(it)
         perHost[h] = n + 1
       }
